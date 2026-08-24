@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1a1d23; display: flex; align-items: center; justify-content: center; }
+  #container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  #container img { max-width: 90%; max-height: 90%; }
+  #status { position: absolute; top: 8px; left: 12px; color: #888; font-size: 12px; font-family: sans-serif; }
+</style>
+<script src="https://ketcher.local/ketcher-bundle.js"></script>
+</head>
+<body>
+<div id="status">正在初始化…</div>
+<div id="container"></div>
+<script>
+  const status = document.getElementById('status');
+  const container = document.getElementById('container');
+  let service = null;
+
+  function initService() {
+    return new Promise((resolve, reject) => {
+      try {
+        const provider = new Ketcher.StandaloneStructServiceProvider();
+        const svc = provider.createStructService({});
+        const onReady = () => {
+          window.removeEventListener(Ketcher.STRUCT_SERVICE_INITIALIZED_EVENT, onReady);
+          service = svc;
+          status.textContent = '就绪';
+          resolve(svc);
+        };
+        window.addEventListener(Ketcher.STRUCT_SERVICE_INITIALIZED_EVENT, onReady);
+        setTimeout(() => reject(new Error('WASM 加载超时')), 15000);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  async function renderMolecule(sdf) {
+    status.textContent = '正在渲染…';
+    try {
+      if (!service) await initService();
+      const b64 = await service.generateImageAsBase64(sdf, { outputFormat: 'svg' });
+      container.innerHTML = '<img src="data:image/svg+xml;base64,' + b64 + '" />';
+      status.textContent = '';
+    } catch (e) {
+      status.textContent = '渲染失败：' + e.message;
+    }
+  }
+
+  window.renderMolecule = renderMolecule;
+  window.isReady = () => service !== null;
+
+  initService().catch(e => { status.textContent = '初始化失败：' + e.message; });
+</script>
+</body>
+</html>

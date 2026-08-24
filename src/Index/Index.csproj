@@ -1,0 +1,93 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.26100.0</TargetFramework>
+    <UseWinUI>true</UseWinUI>
+    <RootNamespace>Index</RootNamespace>
+    <AssemblyName>Index</AssemblyName>
+    <Version>0.0.8</Version>
+    <AssemblyVersion>0.0.8.0</AssemblyVersion>
+    <FileVersion>0.0.8.0</FileVersion>
+    <Platforms>x64</Platforms>
+    <win2d-Platform>x64</win2d-Platform>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <WindowsPackageType>None</WindowsPackageType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Index.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <SkipIntermediatePriGenerationForResourceFiles>true</SkipIntermediatePriGenerationForResourceFiles>
+    <EnableDefaultAppxPackaging>false</EnableDefaultAppxPackaging>
+    <PriProjTaskAssembly>C:\temp\AppxPackage\Microsoft.Build.Packaging.Pri.Tasks.dll</PriProjTaskAssembly>
+    <AppxMSBuildTaskAssembly>C:\temp\AppxPackage\Microsoft.Build.AppxPackage.dll</AppxMSBuildTaskAssembly>
+    <AppxUseResourceIndexerApi>true</AppxUseResourceIndexerApi>
+    <AppxPackage>false</AppxPackage>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250310001" />
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+    <PackageReference Include="SkiaSharp.Views.WinUI" Version="3.116.1" />
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.19" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.2.0" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2526" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\Index.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\Ketcher\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Index.Core\Index.Core.csproj" />
+    <ProjectReference Include="..\Index.Windows\Index.Windows.csproj" />
+  </ItemGroup>
+
+  <!-- EditorWindow 是标注编辑器（阶段 7h）半成品，命名空间待对齐 SkiaSharp 3.x，暂排除编译 -->
+  <ItemGroup>
+    <Compile Remove="UI\Editor\EditorWindow.cs" />
+  </ItemGroup>
+
+  <!-- 骨架阶段无自定义资源，跳过 PRI 生成（缺少 Microsoft.Build.Packaging.Pri.Tasks.dll） -->
+  <Target Name="_GenerateProjectPriFile" />
+  <Target Name="_CalculateInputsForGenerateProjectPriFileCore" />
+  <Target Name="_GenerateProjectPriFileCore" />
+  <Target Name="BeforeGenerateProjectPriFile" />
+  <Target Name="AfterGenerateProjectPriFile" />
+  <Target Name="_ExpandProjectPriFile" />
+
+  <!-- Windows App SDK 1.7 leaves TargetPath empty for its two app-local PRI files in an
+       unpackaged self-contained build. Microsoft.Common then treats OutDir itself as the
+       destination file. Normalize only those extracted SDK PRI items before copy/publish. -->
+  <Target
+    Name="NormalizeWindowsAppSdkPriTargetPaths"
+    BeforeTargets="_CopyOutOfDateSourceItemsToOutputDirectory;_CopyOutOfDateSourceItemsToOutputDirectoryAlways;_CopyFilesMarkedCopyLocal"
+    Condition="'$(WindowsAppSDKSelfContained)' == 'true'">
+    <ItemGroup>
+      <_SourceItemsToCopyToOutputDirectory
+        Update="@(_SourceItemsToCopyToOutputDirectory)"
+        Condition="$([System.String]::Copy('%(_SourceItemsToCopyToOutputDirectory.Identity)').Contains('MsixContent')) and '%(_SourceItemsToCopyToOutputDirectory.Extension)' == '.pri'">
+        <TargetPath>%(_SourceItemsToCopyToOutputDirectory.Filename)%(_SourceItemsToCopyToOutputDirectory.Extension)</TargetPath>
+      </_SourceItemsToCopyToOutputDirectory>
+      <_SourceItemsToCopyToOutputDirectoryAlways
+        Update="@(_SourceItemsToCopyToOutputDirectoryAlways)"
+        Condition="$([System.String]::Copy('%(_SourceItemsToCopyToOutputDirectoryAlways.Identity)').Contains('MsixContent')) and '%(_SourceItemsToCopyToOutputDirectoryAlways.Extension)' == '.pri'">
+        <TargetPath>%(_SourceItemsToCopyToOutputDirectoryAlways.Filename)%(_SourceItemsToCopyToOutputDirectoryAlways.Extension)</TargetPath>
+      </_SourceItemsToCopyToOutputDirectoryAlways>
+      <ReferenceCopyLocalPaths
+        Update="@(ReferenceCopyLocalPaths)"
+        Condition="$([System.String]::Copy('%(ReferenceCopyLocalPaths.Identity)').Contains('MsixContent')) and '%(ReferenceCopyLocalPaths.Extension)' == '.pri'">
+        <TargetPath>%(ReferenceCopyLocalPaths.Filename)%(ReferenceCopyLocalPaths.Extension)</TargetPath>
+      </ReferenceCopyLocalPaths>
+    </ItemGroup>
+  </Target>
+
+</Project>

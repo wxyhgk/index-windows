@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Index</RootNamespace>
+    <AssemblyName>Index.Core</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.19" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Index" />
+    <InternalsVisibleTo Include="Index.Tests" />
+  </ItemGroup>
+
+</Project>

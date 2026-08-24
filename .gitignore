@@ -1,0 +1,32 @@
+.build/
+build/
+.swiftpm/
+Package.resolved
+.DS_Store
+.claude/
+__pycache__/
+*.pyc
+
+# SourceKit-LSP 单文件编译时会把中间产物丢在仓库根目录
+*.o
+*.d
+*.swiftdeps
+*.swiftdeps~
+
+# .NET / Visual Studio build outputs
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+
+# Windows publish and installer outputs
+artifacts/
+
+# Ketcher build workspace (temporary, used to produce ketcher-bundle.js)
+ketcher-build/
+src/Index/Assets/ketcher-pkg/
+src/Index/Assets/ketcher-standalone.tgz
+
+# Python virtual environment
+molgrapher-service/venv/
