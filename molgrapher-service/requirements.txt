@@ -7,6 +7,7 @@
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 python-multipart>=0.0.6
+openvino==2025.3.0
 
 # --- PyTorch (Windows CPU) ---
 # 注意：torch 必须 2.1.2，2.8.0 与 paddlepaddle 3.0.0 有 DLL 冲突（shm.dll）

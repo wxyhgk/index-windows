@@ -50,6 +50,27 @@
 - 上游：[microsoft/Win2D](https://github.com/microsoft/Win2D)，
   [LICENSE](https://github.com/microsoft/Win2D/blob/main/LICENSE.txt)。
 
+## Ketcher
+
+- 用途：Windows 端 WebView2 内的离线二维分子结构绘图与编辑。
+- 当前锁定版本：`ketcher-react`、`ketcher-core`、`ketcher-standalone` 3.17.2
+  （见 `scripts/ketcher/package-lock.json`）。
+- 许可证：Apache License 2.0。
+- Copyright © EPAM Systems, Inc. 及贡献者。
+- 上游：[epam/ketcher](https://github.com/epam/ketcher)，
+  [LICENSE](https://github.com/epam/ketcher/blob/master/LICENSE)。
+- 编辑器 bundle 同时包含 React 18.3.1（MIT）及 Ketcher 的 npm 传递依赖；
+  完整版本与许可证元数据记录在 `scripts/ketcher/package-lock.json`。
+
+## OpenVINO
+
+- 用途：在 Windows 上加速 MolGrapher 的关键点检测器和图分类器视觉骨干网络。
+- 当前锁定版本：2025.3.0（见 `molgrapher-service/requirements.txt`）。
+- 许可证：Apache License 2.0。
+- Copyright © Intel Corporation 及贡献者。
+- 上游：[openvinotoolkit/openvino](https://github.com/openvinotoolkit/openvino)，
+  [LICENSE](https://github.com/openvinotoolkit/openvino/blob/master/LICENSE)。
+
 ## FLIPPED
 
 - 用途：Windows 截图窗口候选过滤与 DWM 可见边界处理的实现参考。

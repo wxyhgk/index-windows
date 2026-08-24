@@ -6,9 +6,9 @@
     <UseWinUI>true</UseWinUI>
     <RootNamespace>Index</RootNamespace>
     <AssemblyName>Index</AssemblyName>
-    <Version>0.0.9</Version>
-    <AssemblyVersion>0.0.9.0</AssemblyVersion>
-    <FileVersion>0.0.9.0</FileVersion>
+    <Version>0.0.10</Version>
+    <AssemblyVersion>0.0.10.0</AssemblyVersion>
+    <FileVersion>0.0.10.0</FileVersion>
     <Platforms>x64</Platforms>
     <win2d-Platform>x64</win2d-Platform>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>

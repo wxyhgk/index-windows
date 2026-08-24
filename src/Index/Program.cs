@@ -12,6 +12,7 @@ using Index.Settings;
 using Index.UI;
 using Index.UI.Pin;
 using Index.Storage;
+using Index.Recognition;
 
 namespace Index;
 
@@ -30,6 +31,7 @@ public static class Program
     private static ClipboardHistoryCoordinator? _clipboardHistory;
     private static LibraryOrganizationStore? _libraryOrganization;
     private static PinWindowManager? _pinWindows;
+    private static RecognitionPluginRegistry? _recognitionPlugins;
 
     [STAThread]
     private static void Main(string[] args)
@@ -79,12 +81,20 @@ public static class Program
                     capturePersistence,
                     new CaptureActionContextFactory());
                 _coordinator.InitOnUiThread();
+                var shotAssetReader = new WindowsShotAssetReader(_shotStore);
+                _recognitionPlugins = new RecognitionPluginRegistry(
+                    new IRecognitionPlugin[]
+                    {
+                        new MolGrapherClient()
+                    });
                 _mainWindow = new MainWindow(
                     _coordinator,
                     _shotStore,
                     _libraryOrganization,
                     _shortcutSettings,
-                    _clipboardPopup);
+                    _clipboardPopup,
+                    shotAssetReader,
+                    _recognitionPlugins);
                 _mainWindow.Activate();
                 _shortcutController = new GlobalShortcutController(
                     _shortcutSettings,
@@ -99,6 +109,7 @@ public static class Program
                     _clipboardHistory?.Dispose();
                     _clipboardPopup?.Close();
                     _pinWindows?.Dispose();
+                    _recognitionPlugins?.Dispose();
                 };
             }
             catch (Exception error)

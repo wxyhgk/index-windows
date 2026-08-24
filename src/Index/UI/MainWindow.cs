@@ -6,8 +6,10 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Index.UI.Gallery;
+using Index.UI.Molecule;
 using Index.UI.Settings;
 using Index.Platform.Windowing;
+using Index.Recognition;
 
 namespace Index.UI;
 
@@ -19,14 +21,17 @@ public sealed class MainWindow : Window
     private readonly LibraryOrganizationStore _libraryOrganization;
     private readonly IShortcutSettingsStore _shortcutSettings;
     private readonly ClipboardPopupModule _clipboardPopup;
+    private readonly IShotAssetReader _shotAssets;
+    private readonly IRecognitionPluginRegistry _recognitionPlugins;
     private readonly Grid _content = new();
     private readonly StackPanel _subTabs = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private readonly GalleryTheme _theme = new();
     private readonly Dictionary<string, Button> _topButtons = new();
     private readonly Dictionary<string, Button> _subButtons = new();
-    private ShotPreviewWindow? _previewWindow;
+    private ShotPreviewView? _previewView;
     private ShotGalleryGridView? _previewGallery;
     private int _contentGeneration;
+    private bool _galleryRefreshPending;
     private string _activeTopTab = "library";
     private string _activeLibrarySection = "shots";
 
@@ -35,13 +40,17 @@ public sealed class MainWindow : Window
         ShotStore shotStore,
         LibraryOrganizationStore libraryOrganization,
         IShortcutSettingsStore shortcutSettings,
-        ClipboardPopupModule clipboardPopup)
+        ClipboardPopupModule clipboardPopup,
+        IShotAssetReader shotAssets,
+        IRecognitionPluginRegistry recognitionPlugins)
     {
         _coordinator = coordinator;
         _shotStore = shotStore;
         _libraryOrganization = libraryOrganization;
         _shortcutSettings = shortcutSettings;
         _clipboardPopup = clipboardPopup;
+        _shotAssets = shotAssets;
+        _recognitionPlugins = recognitionPlugins;
         _shotStore.CaptureSaved += OnCaptureSaved;
         Closed += OnClosed;
         var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Index.ico");
@@ -93,6 +102,7 @@ public sealed class MainWindow : Window
         var button = MakeButton(title);
         button.Click += (_, _) =>
         {
+            ClosePreview();
             _activeTopTab = id;
             Select(_topButtons, id);
             switch (id)
@@ -194,6 +204,11 @@ public sealed class MainWindow : Window
         {
             if (_activeTopTab != "library" || _activeLibrarySection != "shots")
                 return;
+            if (_previewView is not null && _content.Children.Contains(_previewView))
+            {
+                _galleryRefreshPending = true;
+                return;
+            }
             var generation = ++_contentGeneration;
             _ = LoadShotGalleryAsync(generation);
         });
@@ -201,6 +216,9 @@ public sealed class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        ClosePreview();
+        _previewView?.Dispose();
+        _previewView = null;
         _shotStore.CaptureSaved -= OnCaptureSaved;
         Closed -= OnClosed;
     }
@@ -308,7 +326,6 @@ public sealed class MainWindow : Window
 
     private void OpenPreview(ShotGalleryGridView gallery, ShotRecord shot)
     {
-        var created = false;
         if (!ReferenceEquals(_previewGallery, gallery))
         {
             if (_previewGallery is not null)
@@ -317,28 +334,34 @@ public sealed class MainWindow : Window
             _previewGallery.SelectionChanged += SyncPreviewSelection;
         }
 
-        if (_previewWindow is null)
+        if (_previewView is null)
         {
-            _previewWindow = new ShotPreviewWindow(_shotStore, _theme, shot);
-            _previewWindow.NavigationRequested += NavigatePreview;
-            _previewWindow.Closed += OnPreviewClosed;
-            created = true;
+            _previewView = new ShotPreviewView(
+                _shotStore,
+                _shotAssets,
+                _recognitionPlugins,
+                _theme,
+                shot);
+            _previewView.NavigationRequested += NavigatePreview;
+            _previewView.CloseRequested += ClosePreview;
         }
         else
         {
-            _previewWindow.ShowShot(shot);
+            _previewView.ShowShot(shot);
         }
 
-        _previewWindow.Activate();
-        if (created)
+        if (!_content.Children.Contains(_previewView))
         {
-            OwnedWindowRelationship.Attach(this, _previewWindow);
-            _previewWindow.Activate();
+            Grid.SetRow(_previewView, 0);
+            Grid.SetRowSpan(_previewView, Math.Max(1, _content.RowDefinitions.Count));
+            Canvas.SetZIndex(_previewView, 100);
+            _content.Children.Add(_previewView);
         }
+        _previewView.Focus(FocusState.Programmatic);
     }
 
     private void SyncPreviewSelection(ShotRecord shot)
-        => _previewWindow?.ShowShot(shot);
+        => _previewView?.ShowShot(shot);
 
     private async void NavigatePreview(int delta)
     {
@@ -346,18 +369,25 @@ public sealed class MainWindow : Window
             await _previewGallery.MoveSelectionAsync(delta);
     }
 
-    private void OnPreviewClosed(object sender, WindowEventArgs args)
+    private void ClosePreview()
     {
-        if (_previewWindow is not null)
+        var wasActive = _previewView is not null && _content.Children.Contains(_previewView);
+        if (_previewView is not null)
         {
-            _previewWindow.NavigationRequested -= NavigatePreview;
-            _previewWindow.Closed -= OnPreviewClosed;
-            _previewWindow = null;
+            _content.Children.Remove(_previewView);
+            _previewView.Deactivate();
         }
         if (_previewGallery is not null)
         {
             _previewGallery.SelectionChanged -= SyncPreviewSelection;
             _previewGallery = null;
+        }
+        if (wasActive && _galleryRefreshPending
+            && _activeTopTab == "library" && _activeLibrarySection == "shots")
+        {
+            _galleryRefreshPending = false;
+            var generation = ++_contentGeneration;
+            _ = LoadShotGalleryAsync(generation);
         }
     }
 
@@ -508,6 +538,7 @@ public sealed class MainWindow : Window
     public void ShowLibraryPage()
     {
         Activate();
+        ClosePreview();
         ShowLibrary();
     }
 

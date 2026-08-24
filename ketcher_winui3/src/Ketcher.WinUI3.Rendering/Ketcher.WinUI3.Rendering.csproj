@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Ketcher.WinUI3.Rendering</RootNamespace>
+    <AssemblyName>Ketcher.WinUI3.Rendering</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ketcher.WinUI3.Core\Ketcher.WinUI3.Core.csproj" />
+  </ItemGroup>
+
+</Project>

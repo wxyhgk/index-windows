@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows10.0.26100.0</TargetFramework>
+    <UseWinUI>true</UseWinUI>
+    <RootNamespace>Ketcher.WinUI3.Controls</RootNamespace>
+    <AssemblyName>Ketcher.WinUI3.Controls</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <SkipIntermediatePriGenerationForResourceFiles>true</SkipIntermediatePriGenerationForResourceFiles>
+    <EnableDefaultAppxPackaging>false</EnableDefaultAppxPackaging>
+    <AppxPackage>false</AppxPackage>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250310001" />
+    <PackageReference Include="SkiaSharp" Version="3.116.1" />
+    <PackageReference Include="SkiaSharp.Views.WinUI" Version="3.116.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ketcher.WinUI3.Core\Ketcher.WinUI3.Core.csproj" />
+    <ProjectReference Include="..\Ketcher.WinUI3.Rendering\Ketcher.WinUI3.Rendering.csproj" />
+  </ItemGroup>
+
+  <!-- 骨架阶段无自定义资源，跳过 PRI 生成 -->
+  <Target Name="_GenerateProjectPriFile" />
+  <Target Name="_CalculateInputsForGenerateProjectPriFileCore" />
+  <Target Name="_GenerateProjectPriFileCore" />
+  <Target Name="BeforeGenerateProjectPriFile" />
+  <Target Name="AfterGenerateProjectPriFile" />
+  <Target Name="_ExpandProjectPriFile" />
+
+</Project>
