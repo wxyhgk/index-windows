@@ -18,7 +18,21 @@ public sealed record ClipboardHistoryItem(
     string? SourceApplication,
     bool IsPinned = false,
     string? AssetPath = null,
-    IReadOnlyList<string>? FilePaths = null);
+    IReadOnlyList<string>? FilePaths = null,
+    DateTimeOffset? LastUsedAt = null,
+    string? Title = null,
+    bool IsFavorite = false)
+{
+    public string ResolvedDisplayName =>
+        string.IsNullOrWhiteSpace(Title) ? DisplayName : Title;
+}
+
+/// <summary>Database-backed clipboard query. Null values mean that the filter is disabled.</summary>
+public sealed record ClipboardHistoryQuery(
+    string? SearchText = null,
+    ClipboardItemKind? Kind = null,
+    bool FavoritesOnly = false,
+    int Limit = 100);
 
 /// <summary>监听器交给存储层的一份完整、不可变剪切板快照。</summary>
 public sealed record ClipboardSnapshot(
@@ -40,15 +54,44 @@ public interface IClipboardHistorySource
     Task<IReadOnlyList<ClipboardHistoryItem>> LoadRecentAsync(
         int limit = 50,
         CancellationToken cancellationToken = default);
+
+    async Task<IReadOnlyList<ClipboardHistoryItem>> SearchAsync(
+        string? query,
+        ClipboardItemKind? kind,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        var items = await LoadRecentAsync(limit, cancellationToken);
+        return items
+            .Where(item => kind is null || item.Kind == kind)
+            .Where(item => string.IsNullOrWhiteSpace(query)
+                || item.ResolvedDisplayName.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || item.Summary.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || (item.Text?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (item.SourceApplication?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false))
+            .Take(Math.Max(0, limit))
+            .ToArray();
+    }
 }
 
 public interface IClipboardHistoryStore : IClipboardHistorySource
 {
+    Task<IReadOnlyList<ClipboardHistoryItem>> QueryAsync(
+        ClipboardHistoryQuery query,
+        CancellationToken cancellationToken = default);
+
     Task<ClipboardHistoryItem> RecordAsync(
         ClipboardSnapshot snapshot,
         CancellationToken cancellationToken = default);
 
     Task TogglePinnedAsync(long id, CancellationToken cancellationToken = default);
+    Task MarkUsedAsync(long id, CancellationToken cancellationToken = default);
+    Task SetTitleAsync(long id, string? title, CancellationToken cancellationToken = default);
+    Task SetFavoriteAsync(long id, bool isFavorite, CancellationToken cancellationToken = default);
+    Task<int> PruneAsync(
+        int olderThanDays,
+        DateTimeOffset? now = null,
+        CancellationToken cancellationToken = default);
     Task DeleteAsync(long id, CancellationToken cancellationToken = default);
 }
 

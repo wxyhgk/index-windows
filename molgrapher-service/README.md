@@ -16,6 +16,10 @@ start.bat
 
 服务启动后监听 `http://127.0.0.1:8100`。
 
+Index 会在启动时探测该地址。已有兼容服务时只连接；服务未运行且本目录的
+`venv\Scripts\python.exe` 已安装时，Index 会隐藏启动 `app.py` 并等待健康检查。
+应用退出时只终止由本次 Index 会话启动的服务，不会结束用户手动运行的实例。
+
 首次识别会生成并缓存两个 OpenVINO IR 模型，可能需要数分钟；后续启动会直接复用
 `models/openvino/` 中的缓存。默认使用 OpenVINO CPU 后端。在其他 Windows 设备上
 可设置 `MOLGRAPHER_OPENVINO_DEVICE=GPU` 或 `AUTO:GPU,CPU` 进行对比测试；设置
@@ -32,7 +36,13 @@ start.bat
 ### GET /health
 
 ```json
-{ "status": "ok", "model_loaded": false }
+{
+  "service": "molgrapher",
+  "service_version": "1.0.0",
+  "protocol_version": "1",
+  "status": "ok",
+  "model_loaded": false
+}
 ```
 
 ### POST /recognize

@@ -24,32 +24,25 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
 
     private readonly ShotStore _store;
     private readonly IShotAssetReader _shotAssets;
-    private readonly IRecognitionPluginRegistry _recognitionPlugins;
+    private readonly ShotRecognitionWorkflow<MoleculeRecognitionResult> _moleculeRecognition;
     private readonly GalleryTheme _theme;
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _dispatcher;
     private readonly Grid _root;
     private readonly Grid _workspace;
     private readonly Grid _viewport;
     private readonly Grid _imageLayer;
-    private readonly Grid _moleculeHost;
-    private readonly Border _moleculePanel;
-    private readonly ColumnDefinition _moleculeColumn;
     private readonly Image _image;
     private readonly CompositeTransform _imageTransform = new();
     private readonly TextBlock _title;
     private readonly TextBlock _metadata;
-    private readonly TextBlock _moleculeStatus;
-    private readonly TextBlock _moleculeDetails;
     private readonly TextBlock _zoomLabel;
+    private readonly MoleculeWorkspacePresenter _moleculePresenter;
     private readonly RectangleGeometry _viewportClip = new();
     private ShotRecord _shot;
     private bool _isPanning;
     private uint _panPointerId;
     private Point _lastPointerPosition;
     private Button? _recognizeButton;
-    private MoleculeSketcherView? _moleculeSketcher;
-    private Task? _moleculeInitialization;
-    private int _moleculeLoadGeneration;
     private CancellationTokenSource _sessionCancellation = new();
     private Guid _sessionId;
     private bool _disposed;
@@ -63,7 +56,11 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
     {
         _store = store;
         _shotAssets = shotAssets;
-        _recognitionPlugins = recognitionPlugins;
+        _moleculeRecognition = new ShotRecognitionWorkflow<MoleculeRecognitionResult>(
+            shotAssets,
+            recognitionPlugins,
+            RecognitionCapabilities.MoleculeStructure,
+            new MoleculeRecognitionOutputPolicy());
         _theme = theme;
         _shot = shot;
         _dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
@@ -130,13 +127,11 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         toolbar.Children.Add(open);
 
         _recognizeButton = MakeButton("识别分子", "调用 MolGrapher 识别截图中的化学分子");
-        _recognizeButton.Click += async (_, _) => await RecognizeMoleculeAsync();
+        _recognizeButton.Click += OnRecognizeClicked;
         Grid.SetColumn(_recognizeButton, 6);
         toolbar.Children.Add(_recognizeButton);
 
         var drawMolecule = MakeButton("绘制分子", "打开空白 Ketcher 分子编辑器");
-        drawMolecule.Click += async (_, _) =>
-            await ShowMoleculePaneAsync(null, null, 0, 0);
         Grid.SetColumn(drawMolecule, 7);
         toolbar.Children.Add(drawMolecule);
 
@@ -184,8 +179,8 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         {
             Width = new GridLength(0.8, GridUnitType.Star)
         });
-        _moleculeColumn = new ColumnDefinition { Width = new GridLength(0) };
-        _workspace.ColumnDefinitions.Add(_moleculeColumn);
+        var moleculeColumn = new ColumnDefinition { Width = new GridLength(0) };
+        _workspace.ColumnDefinitions.Add(moleculeColumn);
         _workspace.Children.Add(imageHost);
 
         var moleculeLayout = new Grid();
@@ -208,38 +203,37 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
             VerticalAlignment = VerticalAlignment.Center
         });
         var closeMolecule = MakeButton("收起", "隐藏分子编辑区，保留已加载的编辑器");
-        closeMolecule.Click += (_, _) => HideMoleculePane();
         Grid.SetColumn(closeMolecule, 1);
         moleculeHeader.Children.Add(closeMolecule);
         moleculeLayout.Children.Add(moleculeHeader);
 
-        _moleculeHost = new Grid();
-        Grid.SetRow(_moleculeHost, 1);
-        moleculeLayout.Children.Add(_moleculeHost);
+        var moleculeHost = new Grid();
+        Grid.SetRow(moleculeHost, 1);
+        moleculeLayout.Children.Add(moleculeHost);
 
         var moleculeFooter = new StackPanel
         {
             Margin = new Thickness(12, 8, 12, 10),
             Spacing = 2
         };
-        _moleculeStatus = new TextBlock
+        var moleculeStatus = new TextBlock
         {
             Text = "编辑器尚未打开",
             Foreground = theme.Text,
             FontSize = 12
         };
-        _moleculeDetails = new TextBlock
+        var moleculeDetails = new TextBlock
         {
             Foreground = theme.Muted,
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap
         };
-        moleculeFooter.Children.Add(_moleculeStatus);
-        moleculeFooter.Children.Add(_moleculeDetails);
+        moleculeFooter.Children.Add(moleculeStatus);
+        moleculeFooter.Children.Add(moleculeDetails);
         Grid.SetRow(moleculeFooter, 2);
         moleculeLayout.Children.Add(moleculeFooter);
 
-        _moleculePanel = new Border
+        var moleculePanel = new Border
         {
             Background = theme.ThumbnailBackground,
             BorderBrush = theme.CardBorder,
@@ -248,8 +242,18 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
             Child = moleculeLayout,
             Visibility = Visibility.Collapsed
         };
-        Grid.SetColumn(_moleculePanel, 1);
-        _workspace.Children.Add(_moleculePanel);
+        Grid.SetColumn(moleculePanel, 1);
+        _workspace.Children.Add(moleculePanel);
+
+        _moleculePresenter = new MoleculeWorkspacePresenter(
+            moleculeHost,
+            moleculePanel,
+            moleculeColumn,
+            moleculeStatus,
+            moleculeDetails,
+            ReturnToUiAsync);
+        closeMolecule.Click += (_, _) => _moleculePresenter.Hide();
+        drawMolecule.Click += OnDrawMoleculeClicked;
 
         Grid.SetRow(_workspace, 1);
         _root.Children.Add(_workspace);
@@ -285,7 +289,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         _recognizeButton.Content = "识别分子";
         var sessionId = _sessionId;
         _ = LoadImageAsync(shot, sessionId, _sessionCancellation.Token);
-        HideMoleculePane();
+        _moleculePresenter.Hide();
         ResetView();
     }
 
@@ -329,6 +333,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
 
     private void BeginSession()
     {
+        _moleculeRecognition.CancelCurrent();
         _sessionCancellation.Cancel();
         _sessionCancellation.Dispose();
         _sessionCancellation = new CancellationTokenSource();
@@ -337,63 +342,6 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
 
     private bool IsCurrentSession(Guid sessionId)
         => !_disposed && sessionId == _sessionId;
-
-    private async Task ShowMoleculePaneAsync(
-        string? sdf,
-        string? smiles,
-        double confidence,
-        int processingMs)
-    {
-        var generation = ++_moleculeLoadGeneration;
-        await ReturnToUiAsync();
-
-        _moleculePanel.Visibility = Visibility.Visible;
-        _moleculeColumn.Width = new GridLength(1.2, GridUnitType.Star);
-        _moleculeStatus.Text = "正在准备分子编辑器…";
-        _moleculeDetails.Text = sdf is null && smiles is null
-            ? "空白画布"
-            : $"置信度 {confidence:P0}  ·  {processingMs}ms";
-        if (_moleculeSketcher is null)
-        {
-            _moleculeSketcher = new MoleculeSketcherView();
-            _moleculeHost.Children.Add(_moleculeSketcher);
-            _moleculeInitialization = _moleculeSketcher.InitializeAsync();
-        }
-
-        try
-        {
-            await (_moleculeInitialization ?? Task.CompletedTask);
-            await ReturnToUiAsync();
-            if (generation != _moleculeLoadGeneration || _moleculeSketcher is null)
-                return;
-
-            if (!string.IsNullOrWhiteSpace(sdf))
-                await _moleculeSketcher.SetSdfAsync(sdf);
-            else if (!string.IsNullOrWhiteSpace(smiles))
-                await _moleculeSketcher.SetSmilesAsync(smiles);
-            else
-                await _moleculeSketcher.ClearAsync();
-
-            await ReturnToUiAsync();
-            if (generation == _moleculeLoadGeneration)
-                _moleculeStatus.Text = sdf is null && smiles is null
-                    ? "空白画布已就绪"
-                    : "识别结果已载入，可以对照原图编辑";
-        }
-        catch (Exception ex)
-        {
-            await ReturnToUiAsync();
-            if (generation == _moleculeLoadGeneration)
-                _moleculeStatus.Text = $"分子编辑器加载失败：{ex.Message}";
-        }
-    }
-
-    private void HideMoleculePane()
-    {
-        _moleculeLoadGeneration++;
-        _moleculePanel.Visibility = Visibility.Collapsed;
-        _moleculeColumn.Width = new GridLength(0);
-    }
 
     private Task ReturnToUiAsync()
     {
@@ -525,6 +473,38 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         });
     }
 
+    private async void OnRecognizeClicked(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await RecognizeMoleculeAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception error)
+        {
+            if (!_disposed)
+                _metadata.Text = $"分子识别异常：{error.Message}";
+        }
+    }
+
+    private async void OnDrawMoleculeClicked(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _moleculePresenter.OpenBlankAsync(_sessionCancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception error)
+        {
+            if (!_disposed)
+                _metadata.Text = $"分子编辑器异常：{error.Message}";
+        }
+    }
+
     private async Task RecognizeMoleculeAsync()
     {
         if (_recognizeButton is not { } btn) return;
@@ -536,46 +516,33 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         btn.Content = "识别中…";
         try
         {
-            var asset = await _shotAssets.ReadBestAvailableAsync(shot, cancellationToken);
-            if (!asset.HasData)
-                throw new FileNotFoundException(asset.Warning ?? "图片文件不存在");
-            if (asset.Status == ShotAssetStatus.ThumbnailFallback)
-            {
-                await RunOnUiAsync(() =>
-                {
-                    if (IsCurrentSession(sessionId))
-                        _metadata.Text = $"{asset.Warning}；识别精度可能降低";
-                });
-            }
-
-            var recognizer = _recognitionPlugins.GetRequired<MoleculeRecognitionResult>(
-                RecognitionCapabilities.MoleculeStructure);
-            var result = await recognizer.RecognizeAsync(
-                RecognitionInput.Image(asset.Data),
-                cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
+            var run = await _moleculeRecognition.RunAsync(shot, cancellationToken);
+            if (run.Status == RecognitionWorkflowStatus.Cancelled)
+                return;
 
             await RunOnUiAsync(async () =>
             {
                 if (!IsCurrentSession(sessionId))
                     return;
 
-                if (result.Error is not null)
+                if (!string.IsNullOrWhiteSpace(run.Warning))
+                    _metadata.Text = $"{run.Warning}；识别精度可能降低";
+
+                if (run.Status == RecognitionWorkflowStatus.Error)
                 {
-                    _metadata.Text = $"分子识别失败：{result.Error}";
+                    _metadata.Text = $"分子识别失败：{run.Error ?? "未知错误"}";
                 }
-                else if (string.IsNullOrWhiteSpace(result.Sdf)
-                    && string.IsNullOrWhiteSpace(result.Smiles))
+                else if (run.Status == RecognitionWorkflowStatus.Empty)
                 {
                     _metadata.Text = "未检测到分子结构";
                 }
-                else
+                else if (run is
+                    {
+                        Status: RecognitionWorkflowStatus.Success,
+                        Output: { } result
+                    })
                 {
-                    await ShowMoleculePaneAsync(
-                        result.Sdf,
-                        result.Smiles,
-                        result.Confidence,
-                        result.ProcessingTimeMs);
+                    await _moleculePresenter.PresentAsync(result, cancellationToken);
                 }
             });
         }
@@ -652,11 +619,13 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         if (_disposed)
             return;
 
+        _moleculeRecognition.CancelCurrent();
         _sessionCancellation.Cancel();
         _sessionId = Guid.NewGuid();
         _recognizeButton!.IsEnabled = true;
         _recognizeButton.Content = "识别分子";
-        HideMoleculePane();
+        _moleculePresenter.Hide();
+        _image.Source = null;
     }
 
     public void Dispose()
@@ -666,10 +635,8 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
 
         Deactivate();
         _disposed = true;
+        _moleculeRecognition.Dispose();
         _sessionCancellation.Dispose();
-        _moleculeLoadGeneration++;
-        _moleculeSketcher?.Dispose();
-        _moleculeSketcher = null;
-        _moleculeInitialization = null;
+        _moleculePresenter.Dispose();
     }
 }

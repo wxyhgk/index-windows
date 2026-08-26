@@ -9,7 +9,7 @@ namespace Index.Capture;
 public sealed class WindowTargetNavigator
 {
     private readonly IReadOnlyList<WindowSelectionTarget> _windowTargets;
-    private readonly FrozenPixelEdgeDetector? _pixelEdgeDetector;
+    private FrozenPixelEdgeDetector? _pixelEdgeDetector;
     private readonly CaptureDisplayIdentity _display;
     private IReadOnlyList<WindowSelectionTarget> _candidates = Array.Empty<WindowSelectionTarget>();
     private int _candidateIndex;
@@ -26,6 +26,16 @@ public sealed class WindowTargetNavigator
 
     public WindowSelectionTarget? CurrentTarget { get; private set; }
     public int CandidateCount => _candidates.Count;
+
+    /// <summary>
+    /// Installs the optional pixel-edge index after the overlay is already interactive.
+    /// Window-bound snapping remains available while the index is being prepared.
+    /// </summary>
+    public void SetPixelEdgeDetector(FrozenPixelEdgeDetector? pixelEdgeDetector)
+    {
+        _pixelEdgeDetector = pixelEdgeDetector;
+        Reset();
+    }
 
     public WindowSelectionTarget? PreviewAt(
         SelectionPoint point,

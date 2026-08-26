@@ -366,8 +366,8 @@ public class MolfileParserTests
         var atoms = doc.Atoms.ToList();
         Assert.Equal("C", atoms[0].Element);
         Assert.Equal(0.0, atoms[0].Position.X, 4);
-        Assert.Equal(0.866, atoms[0].Position.Y, 3);
+        Assert.Equal(-0.866, atoms[0].Position.Y, 3);
         Assert.Equal(1.5, atoms[1].Position.X, 4);
-        Assert.Equal(0.866, atoms[1].Position.Y, 3);
+        Assert.Equal(-0.866, atoms[1].Position.Y, 3);
     }
 }

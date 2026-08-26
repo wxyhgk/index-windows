@@ -68,6 +68,7 @@ internal sealed class ShotDetailPane : UserControl
             VerticalContentAlignment = VerticalAlignment.Stretch,
             Content = new ShotThumbnailView(
                     _store.ThumbnailPath(shot),
+                    _store.LegacyThumbnailPath(shot),
                     _store.OriginalPath(shot))
         };
         ToolTipService.SetToolTip(preview, "点击预览原图 · Space");

@@ -38,9 +38,27 @@ try {
     Copy-Item -Path (Join-Path $sourceDirectory '*') -Destination $stageDirectory -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $bundleDirectory 'Uninstall-Index.ps1') -Destination $stageDirectory -Force
 
-    Get-Process -Name Index -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($InstallDirectory, [StringComparison]::OrdinalIgnoreCase) } |
-        Stop-Process -Force
+    $installedProcesses = @(
+        Get-Process -Name Index -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path.StartsWith($InstallDirectory, [StringComparison]::OrdinalIgnoreCase) }
+    )
+    $installedProcesses | Stop-Process -Force
+    foreach ($process in $installedProcesses) {
+        Wait-Process -Id $process.Id -Timeout 15 -ErrorAction SilentlyContinue
+    }
+    $exitDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $stillRunning = @(
+            Get-Process -Name Index -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -and $_.Path.StartsWith($InstallDirectory, [StringComparison]::OrdinalIgnoreCase) }
+        )
+        if ($stillRunning.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $exitDeadline)
+    if ($stillRunning.Count -gt 0) {
+        throw "Index did not exit before the upgrade: $($stillRunning.Id -join ', ')"
+    }
+    Start-Sleep -Milliseconds 500
 
     if (Test-Path -LiteralPath $InstallDirectory) {
         Move-Item -LiteralPath $InstallDirectory -Destination $backupDirectory

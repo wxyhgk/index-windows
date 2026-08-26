@@ -20,4 +20,9 @@ public interface IShotAssetReader
     Task<ShotAssetReadResult> ReadBestAvailableAsync(
         ShotRecord shot,
         CancellationToken cancellationToken = default);
+
+    Task<ShotAssetReadResult> ReadPreviewAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default)
+        => ReadBestAvailableAsync(shot, cancellationToken);
 }

@@ -1,4 +1,5 @@
 using Index.Capture;
+using Index.Platform;
 using Index.UI.Editor;
 using Microsoft.UI.Dispatching;
 
@@ -23,6 +24,7 @@ internal sealed class CaptureOverlaySessionController : IDisposable
     private readonly Func<SelectionOverlayDecision, CaptureOverlayDecisionHandling> _handleDecision;
     private readonly Action<CaptureOverlaySessionController> _released;
     private readonly Action<string> _log;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private int _isReleased;
 
     public CaptureOverlaySessionController(
@@ -42,12 +44,28 @@ internal sealed class CaptureOverlaySessionController : IDisposable
         // disappear. Pinning relies on this frame as its handoff cover.
         _session.DismissOnCapture = false;
         _session.CaptureRequested += OnCaptureRequested;
+        _session.PixelEdgeDetectionRequested += OnPixelEdgeDetectionRequested;
         _session.Canceled += OnCanceled;
     }
+
+    public event Action<DisplaySnapshot>? PixelEdgeDetectionRequested;
+
+    public CancellationToken LifetimeToken => _lifetimeCancellation.Token;
 
     public void Show() => _session.Show();
 
     public bool TryReactivate() => _session.TryReactivate();
+
+    public bool TrySetPixelEdgeDetector(
+        string displayId,
+        FrozenPixelEdgeDetector? detector)
+    {
+        if (Volatile.Read(ref _isReleased) != 0)
+            return false;
+
+        _session.SetPixelEdgeDetector(displayId, detector);
+        return true;
+    }
 
     public void Cancel() => _session.Cancel();
 
@@ -69,6 +87,9 @@ internal sealed class CaptureOverlaySessionController : IDisposable
 
     private void OnCanceled() => Release();
 
+    private void OnPixelEdgeDetectionRequested(DisplaySnapshot snapshot)
+        => PixelEdgeDetectionRequested?.Invoke(snapshot);
+
     private async Task ExecuteThenReleaseAsync(Func<Task> execute)
     {
         try
@@ -89,9 +110,13 @@ internal sealed class CaptureOverlaySessionController : IDisposable
         if (Interlocked.Exchange(ref _isReleased, 1) != 0)
             return;
 
+        _lifetimeCancellation.Cancel();
         _session.CaptureRequested -= OnCaptureRequested;
+        _session.PixelEdgeDetectionRequested -= OnPixelEdgeDetectionRequested;
         _session.Canceled -= OnCanceled;
+        PixelEdgeDetectionRequested = null;
         _session.Dispose();
+        _lifetimeCancellation.Dispose();
         _released(this);
     }
 }

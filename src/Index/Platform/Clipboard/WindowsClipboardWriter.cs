@@ -61,7 +61,14 @@ public sealed class WindowsClipboardWriter : IClipboardWriter
             stream.Seek(0);
 
             var package = new DataPackage();
-            package.SetBitmap(RandomAccessStreamReference.CreateFromStream(stream));
+            var pngReference = RandomAccessStreamReference.CreateFromStream(stream);
+            package.SetBitmap(pngReference);
+            // SetBitmap guarantees broad Windows compatibility, but several
+            // chat/browser clients consume that representation through a DIB
+            // conversion and then JPEG-encode it. Advertising the registered
+            // native PNG clipboard format lets capable clients preserve the
+            // exact lossless payload, which is especially visible on white UI.
+            package.SetData("PNG", pngReference);
             Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
             Windows.ApplicationModel.DataTransfer.Clipboard.Flush();
         }, cancellationToken).ConfigureAwait(false);

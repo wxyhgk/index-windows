@@ -26,6 +26,32 @@ public sealed class ClipboardPopupViewModelTests
         Assert.Equal(2, model.SelectedItem?.Id);
     }
 
+    [Fact]
+    public void FilteringPreservesTheSelectedItemWhenItRemainsVisible()
+    {
+        var model = Model();
+        model.Select(2);
+
+        model.SetQuery("dotnet");
+        Assert.Equal(2, model.SelectedItem?.Id);
+
+        model.SetQuery(string.Empty);
+        Assert.Equal(2, model.SelectedItem?.Id);
+    }
+
+    [Fact]
+    public void SearchIncludesFilePaths()
+    {
+        var model = Model();
+        model.ReplaceItems(model.VisibleItems.Select(item => item.Id == 3
+            ? item with { FilePaths = new[] { @"C:\work\specification.pdf" } }
+            : item));
+
+        model.SetQuery("specification");
+
+        Assert.Equal(3, Assert.Single(model.VisibleItems).Id);
+    }
+
     private static ClipboardPopupViewModel Model()
     {
         var model = new ClipboardPopupViewModel();

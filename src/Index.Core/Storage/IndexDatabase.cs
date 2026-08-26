@@ -162,6 +162,117 @@ public sealed class IndexDatabase
                 cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
+
+        if (!await MigrationAppliedAsync(connection, "v4_search_and_clipboard_metadata", cancellationToken))
+        {
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await ExecuteAsync(connection, transaction, """
+                ALTER TABLE clipboardItem ADD COLUMN lastUsedAt TEXT;
+                ALTER TABLE clipboardItem ADD COLUMN title TEXT;
+                ALTER TABLE clipboardItem ADD COLUMN isFavorite INTEGER NOT NULL DEFAULT 0;
+
+                CREATE INDEX index_clipboardItem_on_favorite_capturedAt
+                    ON clipboardItem(isFavorite DESC, capturedAt DESC, id DESC);
+                CREATE INDEX index_clipboardItem_on_kind_capturedAt
+                    ON clipboardItem(kind, capturedAt DESC, id DESC);
+
+                CREATE VIRTUAL TABLE shotFts USING fts5(
+                    appName,
+                    windowTitle,
+                    sourceURL,
+                    content='shot',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+                INSERT INTO shotFts(shotFts) VALUES('rebuild');
+                CREATE TRIGGER shotFts_after_insert AFTER INSERT ON shot BEGIN
+                    INSERT INTO shotFts(rowid, appName, windowTitle, sourceURL)
+                    VALUES (new.id, new.appName, new.windowTitle, new.sourceURL);
+                END;
+                CREATE TRIGGER shotFts_after_delete AFTER DELETE ON shot BEGIN
+                    INSERT INTO shotFts(shotFts, rowid, appName, windowTitle, sourceURL)
+                    VALUES ('delete', old.id, old.appName, old.windowTitle, old.sourceURL);
+                END;
+                CREATE TRIGGER shotFts_after_update AFTER UPDATE OF appName, windowTitle, sourceURL ON shot BEGIN
+                    INSERT INTO shotFts(shotFts, rowid, appName, windowTitle, sourceURL)
+                    VALUES ('delete', old.id, old.appName, old.windowTitle, old.sourceURL);
+                    INSERT INTO shotFts(rowid, appName, windowTitle, sourceURL)
+                    VALUES (new.id, new.appName, new.windowTitle, new.sourceURL);
+                END;
+
+                CREATE VIRTUAL TABLE attributeFts USING fts5(
+                    shotID UNINDEXED,
+                    key UNINDEXED,
+                    text,
+                    content='shotAttribute',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+                INSERT INTO attributeFts(attributeFts) VALUES('rebuild');
+                CREATE TRIGGER attributeFts_after_insert AFTER INSERT ON shotAttribute BEGIN
+                    INSERT INTO attributeFts(rowid, shotID, key, text)
+                    VALUES (new.id, new.shotID, new.key, new.text);
+                END;
+                CREATE TRIGGER attributeFts_after_delete AFTER DELETE ON shotAttribute BEGIN
+                    INSERT INTO attributeFts(attributeFts, rowid, shotID, key, text)
+                    VALUES ('delete', old.id, old.shotID, old.key, old.text);
+                END;
+                CREATE TRIGGER attributeFts_after_update AFTER UPDATE OF shotID, key, text ON shotAttribute BEGIN
+                    INSERT INTO attributeFts(attributeFts, rowid, shotID, key, text)
+                    VALUES ('delete', old.id, old.shotID, old.key, old.text);
+                    INSERT INTO attributeFts(rowid, shotID, key, text)
+                    VALUES (new.id, new.shotID, new.key, new.text);
+                END;
+
+                CREATE VIRTUAL TABLE clipboardFts USING fts5(
+                    displayName,
+                    summary,
+                    textContent,
+                    sourceApplication,
+                    title,
+                    content='clipboardItem',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+                INSERT INTO clipboardFts(clipboardFts) VALUES('rebuild');
+                CREATE TRIGGER clipboardFts_after_insert AFTER INSERT ON clipboardItem BEGIN
+                    INSERT INTO clipboardFts(
+                        rowid, displayName, summary, textContent, sourceApplication, title)
+                    VALUES (
+                        new.id, new.displayName, new.summary, new.textContent,
+                        new.sourceApplication, new.title);
+                END;
+                CREATE TRIGGER clipboardFts_after_delete AFTER DELETE ON clipboardItem BEGIN
+                    INSERT INTO clipboardFts(
+                        clipboardFts, rowid, displayName, summary, textContent,
+                        sourceApplication, title)
+                    VALUES (
+                        'delete', old.id, old.displayName, old.summary, old.textContent,
+                        old.sourceApplication, old.title);
+                END;
+                CREATE TRIGGER clipboardFts_after_update
+                AFTER UPDATE OF displayName, summary, textContent, sourceApplication, title
+                ON clipboardItem BEGIN
+                    INSERT INTO clipboardFts(
+                        clipboardFts, rowid, displayName, summary, textContent,
+                        sourceApplication, title)
+                    VALUES (
+                        'delete', old.id, old.displayName, old.summary, old.textContent,
+                        old.sourceApplication, old.title);
+                    INSERT INTO clipboardFts(
+                        rowid, displayName, summary, textContent, sourceApplication, title)
+                    VALUES (
+                        new.id, new.displayName, new.summary, new.textContent,
+                        new.sourceApplication, new.title);
+                END;
+                """, cancellationToken);
+            await MarkMigrationAsync(
+                connection,
+                transaction,
+                "v4_search_and_clipboard_metadata",
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
     }
 
     private static async Task<bool> MigrationAppliedAsync(

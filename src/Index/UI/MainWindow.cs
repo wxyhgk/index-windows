@@ -1,4 +1,5 @@
 using Index.App;
+using Index.Platform;
 using Index.Settings;
 using Index.Storage;
 using Microsoft.UI;
@@ -10,6 +11,11 @@ using Index.UI.Molecule;
 using Index.UI.Settings;
 using Index.Platform.Windowing;
 using Index.Recognition;
+using Index.Clipboard;
+using Index.Platform.Clipboard;
+using Index.UI.Clipboard;
+using Index.Search;
+using Index.UI.Search;
 
 namespace Index.UI;
 
@@ -20,7 +26,9 @@ public sealed class MainWindow : Window
     private readonly ShotStore _shotStore;
     private readonly LibraryOrganizationStore _libraryOrganization;
     private readonly IShortcutSettingsStore _shortcutSettings;
-    private readonly ClipboardPopupModule _clipboardPopup;
+    private readonly IClipboardHistorySource _clipboardHistory;
+    private readonly IClipboardWriter _clipboardWriter;
+    private readonly IUnifiedSearchService _unifiedSearch;
     private readonly IShotAssetReader _shotAssets;
     private readonly IRecognitionPluginRegistry _recognitionPlugins;
     private readonly Grid _content = new();
@@ -30,8 +38,13 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string, Button> _subButtons = new();
     private ShotPreviewView? _previewView;
     private ShotGalleryGridView? _previewGallery;
+    private ShotGalleryGridView? _activeGallery;
+    private UnifiedSearchView? _searchView;
     private int _contentGeneration;
     private bool _galleryRefreshPending;
+    private bool _closeToTrayEnabled;
+    private bool _exitRequested;
+    private CancellationTokenSource? _trayTrimCancellation;
     private string _activeTopTab = "library";
     private string _activeLibrarySection = "shots";
 
@@ -40,7 +53,8 @@ public sealed class MainWindow : Window
         ShotStore shotStore,
         LibraryOrganizationStore libraryOrganization,
         IShortcutSettingsStore shortcutSettings,
-        ClipboardPopupModule clipboardPopup,
+        IClipboardHistorySource clipboardHistory,
+        IClipboardWriter clipboardWriter,
         IShotAssetReader shotAssets,
         IRecognitionPluginRegistry recognitionPlugins)
     {
@@ -48,11 +62,14 @@ public sealed class MainWindow : Window
         _shotStore = shotStore;
         _libraryOrganization = libraryOrganization;
         _shortcutSettings = shortcutSettings;
-        _clipboardPopup = clipboardPopup;
+        _clipboardHistory = clipboardHistory;
+        _clipboardWriter = clipboardWriter;
+        _unifiedSearch = new UnifiedSearchService(_shotStore, _clipboardHistory);
         _shotAssets = shotAssets;
         _recognitionPlugins = recognitionPlugins;
         _shotStore.CaptureSaved += OnCaptureSaved;
         Closed += OnClosed;
+        AppWindow.Closing += OnAppWindowClosing;
         var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Index.ico");
         if (File.Exists(iconPath))
             AppWindow.SetIcon(iconPath);
@@ -103,6 +120,7 @@ public sealed class MainWindow : Window
         button.Click += (_, _) =>
         {
             ClosePreview();
+            CloseSearch();
             _activeTopTab = id;
             Select(_topButtons, id);
             switch (id)
@@ -127,6 +145,7 @@ public sealed class MainWindow : Window
 
     private void ShowLibrary()
     {
+        DisposeActiveGallery();
         _activeTopTab = "library";
         Select(_topButtons, "library");
         _content.Children.Clear();
@@ -164,6 +183,7 @@ public sealed class MainWindow : Window
 
     private void ShowLibrarySection(string id, string title, string description)
     {
+        DisposeActiveGallery();
         _activeLibrarySection = id;
         Select(_subButtons, id);
         var generation = ++_contentGeneration;
@@ -181,13 +201,10 @@ public sealed class MainWindow : Window
 
         if (id == "clipboard")
         {
-            var clipboard = MakeCenteredMessage(
-                "剪切板弹窗",
-                "持续记录文本、图片和文件；相同内容会自动去重");
-            var open = MakeButton("打开剪切板弹窗");
-            open.Margin = new Thickness(0, 8, 0, 0);
-            open.Click += (_, _) => _clipboardPopup.Toggle();
-            clipboard.Children.Add(open);
+            var clipboard = new ClipboardLibraryView(
+                _clipboardHistory,
+                _clipboardWriter,
+                _theme);
             Grid.SetRow(clipboard, 1);
             _content.Children.Add(clipboard);
             return;
@@ -216,11 +233,101 @@ public sealed class MainWindow : Window
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
+        CancelTrayMemoryTrim();
         ClosePreview();
+        CloseSearch();
+        DisposeActiveGallery();
         _previewView?.Dispose();
         _previewView = null;
         _shotStore.CaptureSaved -= OnCaptureSaved;
+        AppWindow.Closing -= OnAppWindowClosing;
         Closed -= OnClosed;
+    }
+
+    private void OnAppWindowClosing(
+        Microsoft.UI.Windowing.AppWindow sender,
+        Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
+    {
+        if (!_closeToTrayEnabled || _exitRequested)
+            return;
+
+        args.Cancel = true;
+        sender.Hide();
+        _activeGallery?.SetBackgrounded(true);
+        ScheduleTrayMemoryTrim();
+    }
+
+    public void EnableCloseToTray() => _closeToTrayEnabled = true;
+
+    public void ShowFromTray()
+    {
+        CancelTrayMemoryTrim();
+        _activeGallery?.SetBackgrounded(false);
+        AppWindow.Show();
+        Activate();
+    }
+
+    private void ScheduleTrayMemoryTrim()
+    {
+        CancelTrayMemoryTrim();
+        var cancellation = new CancellationTokenSource();
+        _trayTrimCancellation = cancellation;
+        _ = TrimTrayMemoryAsync(cancellation);
+    }
+
+    private async Task TrimTrayMemoryAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellation.Token)
+                .ConfigureAwait(false);
+            ThumbnailLoader.Shared.Clear();
+            WebsiteFaviconProvider.Shared.Clear();
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_trayTrimCancellation, cancellation))
+                _trayTrimCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelTrayMemoryTrim()
+    {
+        var cancellation = _trayTrimCancellation;
+        _trayTrimCancellation = null;
+        cancellation?.Cancel();
+    }
+
+    private void ShowUnifiedSearch()
+    {
+        DisposeActiveGallery();
+        _activeTopTab = "search";
+        Select(_topButtons, "search");
+        _content.Children.Clear();
+        _content.RowDefinitions.Clear();
+        _content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _searchView = new UnifiedSearchView(
+            _unifiedSearch,
+            _shotAssets,
+            _clipboardWriter,
+            _theme);
+        _content.Children.Add(_searchView);
+    }
+
+    private void CloseSearch()
+    {
+        _searchView?.Dispose();
+        _searchView = null;
+    }
+
+    public void ExitApplication()
+    {
+        _exitRequested = true;
+        Close();
     }
 
     private async Task LoadShotGalleryAsync(int generation)
@@ -239,6 +346,7 @@ public sealed class MainWindow : Window
             var page = new Grid();
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             var header = new Grid { Margin = new Thickness(0, 16, 0, 14) };
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -262,6 +370,7 @@ public sealed class MainWindow : Window
             page.Children.Add(header);
 
             FrameworkElement body;
+            ShotGalleryGridView? nextGallery = null;
             if (shots.Count == 0)
             {
                 var empty = MakeCenteredMessage("还没有截图", "按 Ctrl + Shift + A 开始截图");
@@ -274,6 +383,7 @@ public sealed class MainWindow : Window
             else
             {
                 var gallery = new ShotGalleryGridView(firstPage, _shotStore, _theme);
+                nextGallery = gallery;
                 var detail = new ShotDetailPane(
                     _shotStore,
                     new GalleryShotCommands(_shotStore, _libraryOrganization, DispatcherQueue),
@@ -297,17 +407,28 @@ public sealed class MainWindow : Window
             Grid.SetRow(body, 1);
             page.Children.Add(body);
 
+            var searchAppearance = BuildGallerySearchAppearance();
+            Grid.SetRow(searchAppearance, 2);
+            page.Children.Add(searchAppearance);
+
             if (_content.Children.Count > 1)
+            {
+                DisposeActiveGallery();
                 _content.Children.RemoveAt(1);
+            }
             Grid.SetRow(page, 1);
             _content.Children.Add(page);
+            _activeGallery = nextGallery;
         }
         catch (Exception error)
         {
             if (generation != _contentGeneration)
                 return;
             if (_content.Children.Count > 1)
+            {
+                DisposeActiveGallery();
                 _content.Children.RemoveAt(1);
+            }
             var failed = MakeCenteredMessage("图库读取失败", error.Message);
             Grid.SetRow(failed, 1);
             _content.Children.Add(failed);
@@ -316,6 +437,7 @@ public sealed class MainWindow : Window
 
     private void ShowCollections()
     {
+        DisposeActiveGallery();
         Select(_topButtons, "collections");
         _content.Children.Clear();
         _content.RowDefinitions.Clear();
@@ -358,6 +480,57 @@ public sealed class MainWindow : Window
             _content.Children.Add(_previewView);
         }
         _previewView.Focus(FocusState.Programmatic);
+    }
+
+    private FrameworkElement BuildGallerySearchAppearance()
+    {
+        var content = new Grid { ColumnSpacing = 10 };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.Children.Add(new FontIcon
+        {
+            Glyph = "\uE721",
+            FontSize = 14,
+            Foreground = _theme.Muted,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var placeholder = new TextBlock
+        {
+            Text = "搜索 App、标题、网址或截图里的文字",
+            FontSize = 13,
+            Foreground = _theme.Muted,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(placeholder, 1);
+        content.Children.Add(placeholder);
+        var shortcut = new Border
+        {
+            Background = _theme.Selected,
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(7, 3, 7, 3),
+            Child = new TextBlock
+            {
+                Text = "Ctrl K",
+                FontSize = 11,
+                Foreground = _theme.Muted
+            }
+        };
+        Grid.SetColumn(shortcut, 2);
+        content.Children.Add(shortcut);
+        return new Border
+        {
+            MaxWidth = 520,
+            Height = 42,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 14, 0, 0),
+            Padding = new Thickness(14, 0, 10, 0),
+            Background = _theme.Card,
+            BorderBrush = _theme.CardBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(21),
+            Child = content
+        };
     }
 
     private void SyncPreviewSelection(ShotRecord shot)
@@ -507,6 +680,7 @@ public sealed class MainWindow : Window
 
     private void ShowSimplePage(string title, string description)
     {
+        DisposeActiveGallery();
         _contentGeneration++;
         _content.Children.Clear();
         _content.RowDefinitions.Clear();
@@ -525,6 +699,7 @@ public sealed class MainWindow : Window
 
     private void ShowShortcutSettings()
     {
+        DisposeActiveGallery();
         _contentGeneration++;
         _content.Children.Clear();
         _content.RowDefinitions.Clear();
@@ -537,7 +712,7 @@ public sealed class MainWindow : Window
 
     public void ShowLibraryPage()
     {
-        Activate();
+        ShowFromTray();
         ClosePreview();
         ShowLibrary();
     }
@@ -563,4 +738,13 @@ public sealed class MainWindow : Window
 
     private void ApplyTheme(ElementTheme theme)
         => _theme.Apply(theme);
+
+    private void DisposeActiveGallery()
+    {
+        var gallery = _activeGallery;
+        _activeGallery = null;
+        if (ReferenceEquals(_previewGallery, gallery))
+            _previewGallery = null;
+        gallery?.Dispose();
+    }
 }

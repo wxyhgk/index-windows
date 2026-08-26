@@ -42,6 +42,21 @@ public sealed class WindowsShotAssetReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadBestAvailableFallsBackToLegacyJpegDuringMigration()
+    {
+        var store = await ShotStore.OpenAsync(_root);
+        var shot = MakeShot("legacy-fallback");
+        var thumbnail = new byte[] { 10, 11, 12 };
+        await File.WriteAllBytesAsync(store.LegacyThumbnailPath(shot), thumbnail);
+
+        var result = await new WindowsShotAssetReader(store).ReadBestAvailableAsync(shot);
+
+        Assert.Equal(ShotAssetStatus.ThumbnailFallback, result.Status);
+        Assert.Equal(thumbnail, result.Data.ToArray());
+        Assert.NotNull(result.Warning);
+    }
+
+    [Fact]
     public async Task ReadBestAvailableReportsMissingWithoutThrowing()
     {
         var store = await ShotStore.OpenAsync(_root);

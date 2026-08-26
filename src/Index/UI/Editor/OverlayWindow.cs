@@ -53,6 +53,7 @@ public sealed class OverlayWindow : Window
     private readonly Border _sizeLabel;
     private readonly TextBlock _sizeLabelText;
     private bool _toolbarRefreshQueued;
+    private bool _pixelEdgeDetectionRequested;
 
     // 选区（覆盖层局部坐标）
     private Rect _selection;
@@ -80,6 +81,7 @@ public sealed class OverlayWindow : Window
 
     public event Action<CaptureDecision>? CaptureRequested;
     public event Action<OverlayWindow>? InteractionActivated;
+    public event Action<OverlayWindow>? PixelEdgeDetectionRequested;
     public event Action<OverlayWindow>? CancelRequested;
     public bool CloseOnCapture { get; set; } = true;
 
@@ -157,6 +159,7 @@ public sealed class OverlayWindow : Window
             pixelEdgeDetector,
             _snapshotIdentity.Value);
         _pressedWindowTarget = null;
+        _pixelEdgeDetectionRequested = false;
         _lastPointerPosition = default;
         _selection = default;
         HideEditUI();
@@ -185,9 +188,21 @@ public sealed class OverlayWindow : Window
 
     // MARK: - 指针事件
 
+    public void SetPixelEdgeDetector(FrozenPixelEdgeDetector? pixelEdgeDetector)
+    {
+        _windowTargetNavigator?.SetPixelEdgeDetector(pixelEdgeDetector);
+        if (pixelEdgeDetector is not null
+            && !_isConfirmed
+            && _selectionController is { IsInteracting: false } controller)
+        {
+            PreviewWindowAt(_lastPointerPosition, controller);
+        }
+    }
+
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (!e.GetCurrentPoint(_rootGrid).Properties.IsLeftButtonPressed) return;
+        RequestPixelEdgeDetection();
         InteractionActivated?.Invoke(this);
         var pos = ClampPointToCanvas(e.GetCurrentPoint(_rootGrid).Position);
         _lastPointerPosition = pos;
@@ -237,6 +252,8 @@ public sealed class OverlayWindow : Window
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        RequestPixelEdgeDetection();
+
         var pos = ClampPointToCanvas(e.GetCurrentPoint(_rootGrid).Position);
         _lastPointerPosition = pos;
         if (_selectionController is not { } controller) return;
@@ -363,12 +380,22 @@ public sealed class OverlayWindow : Window
 
     private void OnPointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
+        RequestPixelEdgeDetection();
         if (_isConfirmed || _selectionController?.IsInteracting != false) return;
         var point = e.GetCurrentPoint(_rootGrid);
         _lastPointerPosition = ClampPointToCanvas(point.Position);
         int direction = point.Properties.MouseWheelDelta < 0 ? 1 : -1;
         if (CycleWindowTarget(direction))
             e.Handled = true;
+    }
+
+    private void RequestPixelEdgeDetection()
+    {
+        if (_pixelEdgeDetectionRequested)
+            return;
+
+        _pixelEdgeDetectionRequested = true;
+        PixelEdgeDetectionRequested?.Invoke(this);
     }
 
     /// <summary>另一块屏开始交互时，清除此屏尚未提交的选区与标注。</summary>

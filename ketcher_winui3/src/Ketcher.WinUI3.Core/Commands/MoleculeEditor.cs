@@ -76,10 +76,11 @@ public sealed class MoleculeEditor
         Execute(new AddRingCommand(template, center));
     }
 
-    /// <summary>切换键类型：单→双→三→单（Ketcher bondChangingAction 逻辑）。</summary>
+    /// <summary>切换键类型：单→双→三→单（Ketcher bondChangingAction 逻辑）。芳香键不参与循环。</summary>
     public void CycleBondOrder(int bondId)
     {
         if (Document.GetBond(bondId) is not { } bond) return;
+        if (bond.IsAromatic) return;
         int nextOrder = bond.Order >= 3 ? 1 : bond.Order + 1;
         Execute(new ChangeBondOrderCommand(bondId, nextOrder));
     }

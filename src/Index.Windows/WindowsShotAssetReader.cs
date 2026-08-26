@@ -25,8 +25,8 @@ public sealed class WindowsShotAssetReader : IShotAssetReader
                 await File.ReadAllBytesAsync(originalPath, cancellationToken));
         }
 
-        var thumbnailPath = _store.ThumbnailPath(shot);
-        if (File.Exists(thumbnailPath))
+        var thumbnailPath = FirstExistingThumbnail(shot);
+        if (thumbnailPath is not null)
         {
             return new ShotAssetReadResult(
                 ShotAssetStatus.ThumbnailFallback,
@@ -38,5 +38,32 @@ public sealed class WindowsShotAssetReader : IShotAssetReader
             ShotAssetStatus.Missing,
             ReadOnlyMemory<byte>.Empty,
             "原图和缩略图文件都不存在");
+    }
+
+    public async Task<ShotAssetReadResult> ReadPreviewAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(shot);
+
+        var thumbnailPath = FirstExistingThumbnail(shot);
+        if (thumbnailPath is not null)
+        {
+            return new ShotAssetReadResult(
+                ShotAssetStatus.ThumbnailFallback,
+                await File.ReadAllBytesAsync(thumbnailPath, cancellationToken));
+        }
+
+        return await ReadBestAvailableAsync(shot, cancellationToken);
+    }
+
+    private string? FirstExistingThumbnail(ShotRecord shot)
+    {
+        var lossless = _store.ThumbnailPath(shot);
+        if (File.Exists(lossless))
+            return lossless;
+
+        var legacy = _store.LegacyThumbnailPath(shot);
+        return File.Exists(legacy) ? legacy : null;
     }
 }

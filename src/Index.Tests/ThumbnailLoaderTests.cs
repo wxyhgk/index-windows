@@ -6,6 +6,16 @@ namespace Index.Tests;
 public sealed class ThumbnailLoaderTests
 {
     [Fact]
+    public void DefaultCacheBudgetIsBoundedForDesktopIdleUse()
+    {
+        var options = new ThumbnailLoaderOptions();
+
+        Assert.Equal(48L * 1024 * 1024, options.MaxCacheBytes);
+        Assert.Equal(160, options.MaxCacheItems);
+        Assert.Equal(512, options.MaxPixelDimension);
+    }
+
+    [Fact]
     public async Task CacheSharesDecodeAndLeaseSurvivesInvalidation()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"index-thumbnail-{Guid.NewGuid():N}");

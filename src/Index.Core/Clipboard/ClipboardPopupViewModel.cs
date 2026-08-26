@@ -6,38 +6,22 @@ namespace Index.Clipboard;
 public sealed class ClipboardPopupViewModel
 {
     private readonly List<ClipboardHistoryItem> _items = new();
+    private IReadOnlyList<ClipboardHistoryItem> _visibleItems = Array.Empty<ClipboardHistoryItem>();
+    private long? _selectedId;
 
     public string Query { get; private set; } = string.Empty;
     public ClipboardItemKind? KindFilter { get; private set; }
     public int SelectedIndex { get; private set; }
 
-    public IReadOnlyList<ClipboardHistoryItem> VisibleItems
-    {
-        get
-        {
-            IEnumerable<ClipboardHistoryItem> result = _items;
-            if (KindFilter is { } kind)
-                result = result.Where(item => item.Kind == kind);
-
-            if (!string.IsNullOrWhiteSpace(Query))
-            {
-                var query = Query.Trim();
-                result = result.Where(item =>
-                    item.DisplayName.Contains(query, StringComparison.CurrentCultureIgnoreCase)
-                    || item.Summary.Contains(query, StringComparison.CurrentCultureIgnoreCase)
-                    || (item.Text?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false)
-                    || (item.SourceApplication?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false));
-            }
-            return result.ToArray();
-        }
-    }
+    public IReadOnlyList<ClipboardHistoryItem> VisibleItems => _visibleItems;
 
     public ClipboardHistoryItem? SelectedItem
     {
         get
         {
-            var visible = VisibleItems;
-            return visible.Count == 0 ? null : visible[Math.Clamp(SelectedIndex, 0, visible.Count - 1)];
+            return _visibleItems.Count == 0
+                ? null
+                : _visibleItems[Math.Clamp(SelectedIndex, 0, _visibleItems.Count - 1)];
         }
     }
 
@@ -45,35 +29,37 @@ public sealed class ClipboardPopupViewModel
     {
         _items.Clear();
         _items.AddRange(items.OrderByDescending(item => item.CapturedAt));
-        SelectedIndex = 0;
+        RebuildVisibleItems(preserveSelection: true);
     }
 
     public void SetQuery(string? query)
     {
         Query = query ?? string.Empty;
-        ClampSelection();
+        RebuildVisibleItems(preserveSelection: true);
     }
 
     public void SetKindFilter(ClipboardItemKind? kind)
     {
         KindFilter = kind;
-        SelectedIndex = 0;
+        RebuildVisibleItems(preserveSelection: true);
     }
 
     public void Select(long id)
     {
-        var visible = VisibleItems;
-        var index = visible.Select((item, index) => (item, index))
-            .FirstOrDefault(pair => pair.item.Id == id).index;
-        if (visible.Count > 0 && visible[index].Id == id)
+        var index = FindVisibleIndex(id);
+        if (index >= 0)
+        {
             SelectedIndex = index;
+            _selectedId = id;
+        }
     }
 
     public void MoveSelection(int delta)
     {
-        var count = VisibleItems.Count;
+        var count = _visibleItems.Count;
         if (count == 0) return;
         SelectedIndex = ((SelectedIndex + delta) % count + count) % count;
+        _selectedId = _visibleItems[SelectedIndex].Id;
     }
 
     public bool CopySelected(IClipboardWriter clipboard)
@@ -88,17 +74,52 @@ public sealed class ClipboardPopupViewModel
     {
         var index = _items.FindIndex(item => item.Id == id);
         if (index >= 0)
+        {
             _items[index] = _items[index] with { IsPinned = !_items[index].IsPinned };
+            RebuildVisibleItems(preserveSelection: true);
+        }
     }
 
     public void Delete(long id)
     {
         _items.RemoveAll(item => item.Id == id);
-        ClampSelection();
+        RebuildVisibleItems(preserveSelection: true);
     }
 
-    private void ClampSelection()
+    private void RebuildVisibleItems(bool preserveSelection)
     {
-        SelectedIndex = Math.Clamp(SelectedIndex, 0, Math.Max(0, VisibleItems.Count - 1));
+        var previousIndex = SelectedIndex;
+        var previousId = preserveSelection ? _selectedId ?? SelectedItem?.Id : null;
+        IEnumerable<ClipboardHistoryItem> result = _items;
+        if (KindFilter is { } kind)
+            result = result.Where(item => item.Kind == kind);
+
+        if (!string.IsNullOrWhiteSpace(Query))
+        {
+            var query = Query.Trim();
+            result = result.Where(item =>
+                item.ResolvedDisplayName.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+                || item.Summary.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+                || (item.Text?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false)
+                || (item.SourceApplication?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false)
+                || (item.FilePaths?.Any(path => path.Contains(query, StringComparison.CurrentCultureIgnoreCase)) ?? false));
+        }
+
+        _visibleItems = result.ToArray();
+        var preservedIndex = previousId is { } id ? FindVisibleIndex(id) : -1;
+        SelectedIndex = preservedIndex >= 0
+            ? preservedIndex
+            : Math.Clamp(previousIndex, 0, Math.Max(0, _visibleItems.Count - 1));
+        _selectedId = _visibleItems.Count == 0 ? null : _visibleItems[SelectedIndex].Id;
+    }
+
+    private int FindVisibleIndex(long id)
+    {
+        for (var index = 0; index < _visibleItems.Count; index++)
+        {
+            if (_visibleItems[index].Id == id)
+                return index;
+        }
+        return -1;
     }
 }

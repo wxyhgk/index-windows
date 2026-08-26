@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import gc
 from pathlib import Path
 from types import MethodType
 from typing import Any
@@ -99,6 +100,21 @@ def _infer(compiled_model: Any, images: torch.Tensor) -> torch.Tensor:
     return torch.from_numpy(np.array(output, copy=True))
 
 
+def _parameter_bytes(module: nn.Module) -> int:
+    return sum(parameter.numel() * parameter.element_size() for parameter in module.parameters())
+
+
+class _OpenVINOBackbone(nn.Module):
+    """Small adapter that does not retain the original PyTorch CNN weights."""
+
+    def __init__(self, compiled_model: Any):
+        super().__init__()
+        self._compiled_model = compiled_model
+
+    def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
+        return {"layer4": _infer(self._compiled_model, images)}
+
+
 def install_openvino_acceleration(
     molgrapher_model: Any,
     cache_dir: Path,
@@ -130,11 +146,24 @@ def install_openvino_acceleration(
     def keypoint_forward(_self: nn.Module, images: torch.Tensor) -> torch.Tensor:
         return _infer(keypoint_compiled, images)
 
-    def backbone_forward(_self: nn.Module, images: torch.Tensor) -> dict[str, torch.Tensor]:
-        return {"layer4": _infer(backbone_compiled, images)}
-
     keypoint_detector.forward = MethodType(keypoint_forward, keypoint_detector)
-    graph_backbone.forward = MethodType(backbone_forward, graph_backbone)
+
+    # The OpenVINO IR now owns both CNN inference paths. Retaining the original
+    # PyTorch modules keeps roughly 140 MB of weights resident for no benefit.
+    # Keep KeypointDetector.predict and the graph classifier/GNN heads, while
+    # replacing only modules whose forward calls are handled by OpenVINO.
+    released_parameter_bytes = _parameter_bytes(keypoint_detector) + _parameter_bytes(
+        graph_backbone
+    )
+    keypoint_detector.feature_extractor = nn.Identity()
+    keypoint_detector.conv1 = nn.Identity()
+    keypoint_detector.bn1 = nn.Identity()
+    keypoint_detector.relu = nn.Identity()
+    keypoint_detector.conv2 = nn.Identity()
+    keypoint_detector.bn2 = nn.Identity()
+    graph_classifier.backbone = _OpenVINOBackbone(backbone_compiled)
+    del graph_backbone
+    gc.collect()
 
     execution_devices = {
         "keypoint": keypoint_compiled.get_property("EXECUTION_DEVICES"),
@@ -149,6 +178,7 @@ def install_openvino_acceleration(
         "backend": "openvino",
         "requested_device": requested_device,
         "execution_devices": execution_devices,
+        "released_pytorch_parameter_bytes": released_parameter_bytes,
         # Keep compiled models and Core alive for the patched methods.
         "runtime": (core, keypoint_compiled, backbone_compiled),
     }

@@ -99,8 +99,12 @@ public sealed class FrozenPixelEdgeDetector
     private readonly byte[] _verticalGradient;
     private readonly byte[] _horizontalGradient;
 
-    public FrozenPixelEdgeDetector(LuminanceBuffer luminance, FrozenPixelEdgeOptions? options = null)
+    public FrozenPixelEdgeDetector(
+        LuminanceBuffer luminance,
+        FrozenPixelEdgeOptions? options = null,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         _options = options ?? new FrozenPixelEdgeOptions();
         _options.Validate();
         if (_options.MinimumWidth > luminance.Width)
@@ -112,7 +116,7 @@ public sealed class FrozenPixelEdgeDetector
         _height = luminance.Height;
         _verticalGradient = new byte[checked(_width * _height)];
         _horizontalGradient = new byte[checked(_width * _height)];
-        BuildGradientIndex(luminance);
+        BuildGradientIndex(luminance, cancellationToken);
     }
 
     public int Width => _width;
@@ -198,11 +202,15 @@ public sealed class FrozenPixelEdgeDetector
     private bool HasVisibleBorderCoverage(EdgeCandidate edge, double coverage) =>
         edge.IsImageBoundary || coverage >= _options.MinimumVisibleBorderCoverage;
 
-    private void BuildGradientIndex(LuminanceBuffer luminance)
+    private void BuildGradientIndex(
+        LuminanceBuffer luminance,
+        CancellationToken cancellationToken)
     {
         ReadOnlySpan<byte> source = luminance.Pixels.Span;
         for (int y = 0; y < _height; y++)
         {
+            if ((y & 15) == 0)
+                cancellationToken.ThrowIfCancellationRequested();
             int sourceRow = y * luminance.Stride;
             int targetRow = y * _width;
             for (int x = 1; x < _width; x++)
@@ -214,6 +222,8 @@ public sealed class FrozenPixelEdgeDetector
 
         for (int y = 1; y < _height; y++)
         {
+            if ((y & 15) == 0)
+                cancellationToken.ThrowIfCancellationRequested();
             int sourceRow = y * luminance.Stride;
             int previousRow = sourceRow - luminance.Stride;
             int targetRow = y * _width;

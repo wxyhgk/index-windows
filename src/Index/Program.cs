@@ -13,6 +13,7 @@ using Index.UI;
 using Index.UI.Pin;
 using Index.Storage;
 using Index.Recognition;
+using Index.Platform.Windowing;
 
 namespace Index;
 
@@ -32,6 +33,8 @@ public static class Program
     private static LibraryOrganizationStore? _libraryOrganization;
     private static PinWindowManager? _pinWindows;
     private static RecognitionPluginRegistry? _recognitionPlugins;
+    private static LocalRecognitionHost? _recognitionHost;
+    private static SystemTrayIcon? _trayIcon;
 
     [STAThread]
     private static void Main(string[] args)
@@ -82,20 +85,23 @@ public static class Program
                     new CaptureActionContextFactory());
                 _coordinator.InitOnUiThread();
                 var shotAssetReader = new WindowsShotAssetReader(_shotStore);
+                _recognitionHost = new LocalRecognitionHost();
                 _recognitionPlugins = new RecognitionPluginRegistry(
                     new IRecognitionPlugin[]
                     {
-                        new MolGrapherClient()
+                        new MolGrapherClient(host: _recognitionHost)
                     });
                 _mainWindow = new MainWindow(
                     _coordinator,
                     _shotStore,
                     _libraryOrganization,
                     _shortcutSettings,
-                    _clipboardPopup,
+                    _clipboardStore,
+                    clipboardHistoryWriter,
                     shotAssetReader,
                     _recognitionPlugins);
                 _mainWindow.Activate();
+                InitializeTrayIcon(_mainWindow);
                 _shortcutController = new GlobalShortcutController(
                     _shortcutSettings,
                     () => _ = _coordinator.BeginCaptureAsync("hotkey"),
@@ -110,6 +116,9 @@ public static class Program
                     _clipboardPopup?.Close();
                     _pinWindows?.Dispose();
                     _recognitionPlugins?.Dispose();
+                    _recognitionHost?.Dispose();
+                    _trayIcon?.Dispose();
+                    _trayIcon = null;
                 };
             }
             catch (Exception error)
@@ -130,6 +139,23 @@ public static class Program
         }
         catch
         {
+        }
+    }
+
+    private static void InitializeTrayIcon(MainWindow mainWindow)
+    {
+        try
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Index.ico");
+            _trayIcon = new SystemTrayIcon(iconPath, "Index");
+            _trayIcon.OpenRequested += (_, _) => mainWindow.ShowFromTray();
+            _trayIcon.ExitRequested += (_, _) => mainWindow.ExitApplication();
+            mainWindow.EnableCloseToTray();
+        }
+        catch (Exception error)
+        {
+            // If the shell icon cannot be created, closing the main window must still exit.
+            LogStartupFailure(new InvalidOperationException("Could not initialize the Index tray icon.", error));
         }
     }
 

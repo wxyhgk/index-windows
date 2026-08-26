@@ -123,6 +123,18 @@ public sealed class FrozenPixelEdgeDetectorTests
             new FrozenPixelEdgeOptions { MinimumWidth = 9, MinimumHeight = 1 }));
     }
 
+    [Fact]
+    public void HonorsCancellationBeforeAllocatingGradientPlanes()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var buffer = new LuminanceBuffer(64, 48, 64, new byte[64 * 48]);
+
+        Assert.Throws<OperationCanceledException>(() => new FrozenPixelEdgeDetector(
+            buffer,
+            cancellationToken: cancellation.Token));
+    }
+
     private static FrozenPixelEdgeDetector Detector(byte[] image, int width, int height, int minimum = 16) =>
         new(
             new LuminanceBuffer(width, height, width, image),

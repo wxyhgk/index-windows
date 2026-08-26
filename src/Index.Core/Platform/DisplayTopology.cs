@@ -29,13 +29,13 @@ public sealed class DisplayTopologySnapshot
     public static DisplayTopologySnapshot FromSnapshots(IEnumerable<DisplaySnapshot> snapshots)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
-        return new DisplayTopologySnapshot(snapshots.Select((snapshot, index) =>
+        return new DisplayTopologySnapshot(snapshots.Select(snapshot =>
             new DisplayTopologyEntry(
                 snapshot.DisplayId,
                 snapshot.DeviceName,
                 new DisplayBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height),
                 snapshot.DpiScale,
-                index == 0)));
+                snapshot.IsPrimary)));
     }
 }
 
@@ -75,6 +75,42 @@ public static class DisplayTopology
             if (Math.Abs(expectedDisplay.DpiScale - actualDisplay.DpiScale) > ScaleTolerance) return false;
             if (expectedDisplay.IsPrimary != actualDisplay.IsPrimary) return false;
         }
+        return true;
+    }
+
+    /// <summary>
+    /// Verifies that every captured display still has the same identity and coordinate mapping.
+    /// The current topology may contain additional displays that were intentionally not captured.
+    /// </summary>
+    public static bool ContainsMatchingDisplays(
+        DisplayTopologySnapshot captured,
+        DisplayTopologySnapshot current)
+    {
+        ArgumentNullException.ThrowIfNull(captured);
+        ArgumentNullException.ThrowIfNull(current);
+        if (captured.Displays.Count == 0)
+            return false;
+
+        var capturedById = UniqueById(captured.Displays);
+        var currentById = UniqueById(current.Displays);
+        if (capturedById is null || currentById is null)
+            return false;
+
+        foreach (var (id, capturedDisplay) in capturedById)
+        {
+            if (!currentById.TryGetValue(id, out var currentDisplay))
+                return false;
+            if (!string.Equals(
+                    capturedDisplay.DeviceName,
+                    currentDisplay.DeviceName,
+                    StringComparison.Ordinal)
+                || capturedDisplay.Bounds != currentDisplay.Bounds
+                || Math.Abs(capturedDisplay.DpiScale - currentDisplay.DpiScale) > ScaleTolerance)
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 

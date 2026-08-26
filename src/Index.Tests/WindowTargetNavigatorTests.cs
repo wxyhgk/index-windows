@@ -63,6 +63,30 @@ public sealed class WindowTargetNavigatorTests
         Assert.Equal(new SelectionRect(20, 10, 60, 60), pixelTarget?.Bounds);
     }
 
+    [Fact]
+    public void AddsPixelRegionWhenDetectorArrivesAfterFirstPreview()
+    {
+        var regular = Target(1, new SelectionRect(0, 0, 100, 80));
+        var coordinates = new CaptureCoordinateMapper(100, 80, 100, 80, 1);
+        var navigator = new WindowTargetNavigator([regular], null, Display);
+        var point = new SelectionPoint(50, 40);
+
+        Assert.Equal(regular, navigator.PreviewAt(point, coordinates));
+        Assert.Equal(1, navigator.CandidateCount);
+
+        var pixels = new byte[100 * 80];
+        Array.Fill(pixels, (byte)10);
+        for (int y = 10; y < 70; y++)
+            Array.Fill(pixels, (byte)200, y * 100 + 20, 60);
+        navigator.SetPixelEdgeDetector(new FrozenPixelEdgeDetector(
+            new LuminanceBuffer(100, 80, 100, pixels),
+            new FrozenPixelEdgeOptions { MinimumWidth = 10, MinimumHeight = 10 }));
+
+        Assert.Null(navigator.CurrentTarget);
+        Assert.Equal(regular, navigator.PreviewAt(point, coordinates));
+        Assert.Equal(2, navigator.CandidateCount);
+    }
+
     private static WindowSelectionTarget Target(nint handle, SelectionRect bounds, int depth = 0) =>
         new(handle, new SourceWindowBounds(0, 0, 100, 100), bounds, depth);
 }

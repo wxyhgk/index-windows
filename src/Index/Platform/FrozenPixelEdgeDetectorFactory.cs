@@ -12,36 +12,46 @@ namespace Index.Platform;
 public static class FrozenPixelEdgeDetectorFactory
 {
     public static IReadOnlyDictionary<string, FrozenPixelEdgeDetector> CreateAll(
-        IReadOnlyList<DisplaySnapshot> snapshots)
+        IReadOnlyList<DisplaySnapshot> snapshots,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
         var result = new Dictionary<string, FrozenPixelEdgeDetector>(snapshots.Count);
         foreach (var snapshot in snapshots)
         {
-            var detector = TryCreate(snapshot);
+            cancellationToken.ThrowIfCancellationRequested();
+            var detector = TryCreate(snapshot, cancellationToken);
             if (detector is not null)
                 result[snapshot.DisplayId] = detector;
         }
         return result;
     }
 
-    public static FrozenPixelEdgeDetector? TryCreate(DisplaySnapshot snapshot)
+    public static FrozenPixelEdgeDetector? TryCreate(
+        DisplaySnapshot snapshot,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var decoded = SKBitmap.Decode(snapshot.PngData);
+            cancellationToken.ThrowIfCancellationRequested();
             if (decoded is null || decoded.Width < 16 || decoded.Height < 16)
                 return null;
             using var bitmap = decoded.Copy(SKColorType.Bgra8888);
+            cancellationToken.ThrowIfCancellationRequested();
             if (bitmap is null)
                 return null;
 
             var bgra = new byte[bitmap.ByteCount];
             Marshal.Copy(bitmap.GetPixels(), bgra, 0, bgra.Length);
+            cancellationToken.ThrowIfCancellationRequested();
             var luminance = new byte[checked(bitmap.Width * bitmap.Height)];
             for (int y = 0; y < bitmap.Height; y++)
             {
+                if ((y & 15) == 0)
+                    cancellationToken.ThrowIfCancellationRequested();
                 int sourceRow = y * bitmap.RowBytes;
                 int targetRow = y * bitmap.Width;
                 for (int x = 0; x < bitmap.Width; x++)
@@ -56,7 +66,12 @@ public static class FrozenPixelEdgeDetectorFactory
             }
 
             return new FrozenPixelEdgeDetector(
-                new LuminanceBuffer(bitmap.Width, bitmap.Height, bitmap.Width, luminance));
+                new LuminanceBuffer(bitmap.Width, bitmap.Height, bitmap.Width, luminance),
+                cancellationToken: cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

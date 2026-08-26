@@ -456,9 +456,10 @@ public sealed class MoleculeCanvasControl : UserControl
 
     /// <summary>
     /// 计算新原子位置（Ketcher calcNewAtomPos）：
-    /// 从起点沿拖拽方向，距离 1 键长，角度 snap 到 30° 网格。
+    /// 从起点沿拖拽方向，距离 1 键长，角度 snap 到 15° 网格。
+    /// Ctrl 按住时使用精确角度（不 snap）。
     /// </summary>
-    private static Vector2 CalcNewAtomPosition(Vector2 from, Vector2 to)
+    private static Vector2 CalcNewAtomPosition(Vector2 from, Vector2 to, bool ctrlKey = false)
     {
         var dir = to - from;
         double len = dir.Length;
@@ -466,9 +467,12 @@ public sealed class MoleculeCanvasControl : UserControl
             return from + new Vector2(1, 0);
 
         double angle = Math.Atan2(dir.Y, dir.X);
-        // Snap 到 30° (π/6) 网格
-        const double step = Math.PI / 6;
-        angle = Math.Round(angle / step) * step;
+        if (!ctrlKey)
+        {
+            // Ketcher: FRAC = Math.PI / 12 (15°)
+            const double step = Math.PI / 12;
+            angle = Math.Round(angle / step) * step;
+        }
 
         const double bondLength = 1.0;
         return from + new Vector2(Math.Cos(angle) * bondLength, Math.Sin(angle) * bondLength);

@@ -36,7 +36,10 @@ public sealed class ShotStoreTests : IDisposable
         Assert.Equal(50, result.Shot.PixelHeight);
         Assert.Equal(64, result.Shot.Sha256.Length);
         Assert.True(File.Exists(Path.Combine(_root, "originals", $"{result.Shot.Sha256}.png")));
-        Assert.True(File.Exists(Path.Combine(_root, "thumbnails", $"{result.Shot.Sha256}.jpg")));
+        var thumbnailPath = Path.Combine(_root, "thumbnails", $"{result.Shot.Sha256}.png");
+        Assert.True(File.Exists(thumbnailPath));
+        var thumbnailHeader = (await File.ReadAllBytesAsync(thumbnailPath)).Take(8).ToArray();
+        Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, thumbnailHeader);
 
         var revisions = await store.GetRevisionsAsync(result.Shot.Id);
         Assert.Equal(2, revisions.Count);

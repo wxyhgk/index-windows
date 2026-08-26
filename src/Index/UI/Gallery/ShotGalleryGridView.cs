@@ -11,7 +11,7 @@ namespace Index.UI.Gallery;
 /// <summary>
 /// 游标分页的虚拟化截图网格。ItemsRepeater 只创建视口附近的行，每行固定四张卡片。
 /// </summary>
-internal sealed class ShotGalleryGridView : UserControl
+internal sealed class ShotGalleryGridView : UserControl, IDisposable
 {
     private const int Columns = 4;
     private const int PageSize = 300;
@@ -27,11 +27,14 @@ internal sealed class ShotGalleryGridView : UserControl
     private readonly DispatcherQueueTimer _resizeTimer;
     private readonly DispatcherQueueTimer _scrollIdleTimer;
     private readonly Dictionary<long, ShotCardView> _realizedCards = new();
+    private readonly HashSet<ShotCardView> _allCards = [];
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private ShotPageCursor? _nextCursor;
     private bool _isLoadingPage;
     private bool _thumbnailLoadingEnabled = true;
     private double _responsiveCardWidth = 200;
     private long? _selectedId;
+    private bool _disposed;
 
     public ShotGalleryGridView(
         ShotPage firstPage,
@@ -74,11 +77,7 @@ internal sealed class ShotGalleryGridView : UserControl
         };
         _scrollViewer.ViewChanged += OnViewChanged;
         PreviewKeyDown += OnKeyDown;
-        Unloaded += (_, _) =>
-        {
-            _resizeTimer.Stop();
-            _scrollIdleTimer.Stop();
-        };
+        Unloaded += OnUnloaded;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
         IsTabStop = true;
@@ -111,9 +110,17 @@ internal sealed class ShotGalleryGridView : UserControl
         _isLoadingPage = true;
         try
         {
-            var page = await _store.GetPageAsync(PageSize, cursor);
+            var page = await _store.GetPageAsync(
+                PageSize,
+                cursor,
+                _lifetimeCancellation.Token);
+            if (_disposed)
+                return;
             AppendRows(page.Items);
             _nextCursor = page.NextCursor;
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
         }
         finally
         {
@@ -129,6 +136,7 @@ internal sealed class ShotGalleryGridView : UserControl
             _theme,
             ThumbnailHeight,
             _store.ThumbnailPath(shot),
+            _store.LegacyThumbnailPath(shot),
             _store.OriginalPath(shot))
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -139,6 +147,8 @@ internal sealed class ShotGalleryGridView : UserControl
         card.SetResponsiveWidth(_responsiveCardWidth);
         card.SetThumbnailLoadingEnabled(_thumbnailLoadingEnabled);
         _realizedCards[shot.Id] = card;
+        _allCards.Add(card);
+        _ = EnsureLosslessThumbnailAsync(shot, card);
         return card;
     }
 
@@ -179,12 +189,47 @@ internal sealed class ShotGalleryGridView : UserControl
             shot,
             CardAppearance.ForShot(shot),
             _store.ThumbnailPath(shot),
+            _store.LegacyThumbnailPath(shot),
             _store.OriginalPath(shot));
         card.SetResponsiveWidth(_responsiveCardWidth);
         card.SetThumbnailLoadingEnabled(_thumbnailLoadingEnabled);
         card.IsSelected = shot.Id == _selectedId;
         card.Visibility = Visibility.Visible;
         _realizedCards[shot.Id] = card;
+        _ = EnsureLosslessThumbnailAsync(shot, card);
+    }
+
+    private async Task EnsureLosslessThumbnailAsync(ShotRecord shot, ShotCardView card)
+    {
+        try
+        {
+            if (!await _store.EnsureLosslessThumbnailAsync(
+                    shot,
+                    _lifetimeCancellation.Token))
+                return;
+
+            if (!DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!_disposed && card.Shot.Id == shot.Id)
+                    {
+                        card.SetThumbnailPaths(
+                            _store.ThumbnailPath(shot),
+                            _store.LegacyThumbnailPath(shot),
+                            _store.OriginalPath(shot));
+                    }
+                }))
+            {
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"Lossless thumbnail migration failed for shot {shot.Id}: {error.Message}");
+        }
     }
 
     private void UnrealizeCard(ShotCardView card)
@@ -273,6 +318,43 @@ internal sealed class ShotGalleryGridView : UserControl
 
     public event Action<ShotRecord>? SelectionChanged;
     public event Action<ShotRecord>? PreviewRequested;
+
+    private void OnUnloaded(object sender, RoutedEventArgs args)
+    {
+        _resizeTimer.Stop();
+        _scrollIdleTimer.Stop();
+        _thumbnailLoadingEnabled = false;
+        foreach (var card in _realizedCards.Values)
+            card.SetThumbnailLoadingEnabled(false);
+    }
+
+    public void SetBackgrounded(bool backgrounded)
+    {
+        if (_disposed)
+            return;
+
+        _scrollIdleTimer.Stop();
+        _thumbnailLoadingEnabled = !backgrounded;
+        foreach (var card in _realizedCards.Values)
+            card.SetThumbnailLoadingEnabled(!backgrounded);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _lifetimeCancellation.Cancel();
+        _resizeTimer.Stop();
+        _scrollIdleTimer.Stop();
+        _scrollViewer.ViewChanged -= OnViewChanged;
+        PreviewKeyDown -= OnKeyDown;
+        Unloaded -= OnUnloaded;
+        foreach (var card in _allCards)
+            card.Dispose();
+        _allCards.Clear();
+        _realizedCards.Clear();
+        _lifetimeCancellation.Dispose();
+    }
 
     private sealed record ShotRow(IReadOnlyList<ShotRecord> Shots);
 

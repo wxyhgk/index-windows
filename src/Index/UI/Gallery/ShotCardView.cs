@@ -194,6 +194,9 @@ internal sealed class ShotCardView : UserControl, IDisposable
         IsSelected = false;
     }
 
+    public void SetThumbnailPaths(params string[] thumbnailPaths)
+        => _thumbnail.SetPaths(thumbnailPaths);
+
     private Border MakeHeader()
     {
         _headerRow = new Grid

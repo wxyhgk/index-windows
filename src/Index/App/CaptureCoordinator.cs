@@ -3,6 +3,7 @@ using Index.Platform;
 using Index.Capture;
 using Index.UI.Editor;
 using Microsoft.UI.Dispatching;
+using System.Diagnostics;
 
 namespace Index.App;
 
@@ -72,22 +73,20 @@ public sealed class CaptureCoordinator
             return;
         }
 
+        long captureStarted = Stopwatch.GetTimestamp();
         Log($"BeginCapture ({source}) start, thread={Environment.CurrentManagedThreadId}");
         try
         {
             var snapshots = await _captureSource.MakeSnapshotsAsync();
-            Log($"frozen {snapshots.Count} display(s), thread={Environment.CurrentManagedThreadId}");
-
-            // Build the pixel-edge indexes away from the UI thread. Window topology is still
-            // frozen immediately below, before this CPU work is awaited.
-            var pixelEdgeTask = Task.Run(() =>
-                FrozenPixelEdgeDetectorFactory.CreateAll(snapshots));
+            Log($"frozen {snapshots.Count} display(s), " +
+                $"elapsed={ElapsedMilliseconds(captureStarted):F0}ms, " +
+                $"thread={Environment.CurrentManagedThreadId}");
 
             // 覆盖层一旦激活，前台窗口就会变成 Index。和 macOS 一样，
             // 必须在显示覆盖层之前冻结窗口 Z 序与前台应用。
             var sourceSnapshot = _sourceApplicationResolver.CaptureSnapshot();
-            var pixelEdgeDetectors = await pixelEdgeTask;
-            ShowOverlay(snapshots, sourceSnapshot, pixelEdgeDetectors);
+            Log($"source snapshot captured, elapsed={ElapsedMilliseconds(captureStarted):F0}ms");
+            ShowOverlay(snapshots, sourceSnapshot, captureStarted);
         }
         catch (Exception ex)
         {
@@ -126,29 +125,30 @@ public sealed class CaptureCoordinator
     private void ShowOverlay(
         IReadOnlyList<DisplaySnapshot> snapshots,
         SourceApplicationSnapshot sourceSnapshot,
-        IReadOnlyDictionary<string, FrozenPixelEdgeDetector> pixelEdgeDetectors)
+        long captureStarted)
     {
         // Window 是线程亲和的，必须调度回 UI 线程创建
         if (_uiDispatcher != null)
         {
             if (!_uiDispatcher.TryEnqueue(
                     DispatcherQueuePriority.Normal,
-                    () => CreateOverlay(snapshots, sourceSnapshot, pixelEdgeDetectors)))
+                    () => CreateOverlay(snapshots, sourceSnapshot, captureStarted)))
             {
                 Log("Overlay dispatch failed");
                 EndCaptureSession();
             }
         }
         else
-            CreateOverlay(snapshots, sourceSnapshot, pixelEdgeDetectors);
+            CreateOverlay(snapshots, sourceSnapshot, captureStarted);
     }
 
     private void CreateOverlay(
         IReadOnlyList<DisplaySnapshot> snapshots,
         SourceApplicationSnapshot sourceSnapshot,
-        IReadOnlyDictionary<string, FrozenPixelEdgeDetector> pixelEdgeDetectors)
+        long captureStarted)
     {
-        Log($"creating overlay, thread={Environment.CurrentManagedThreadId}");
+        Log($"creating overlay, elapsed={ElapsedMilliseconds(captureStarted):F0}ms, " +
+            $"thread={Environment.CurrentManagedThreadId}");
         try
         {
             var frozenTopology = DisplayTopologySnapshot.FromSnapshots(snapshots);
@@ -162,8 +162,7 @@ public sealed class CaptureCoordinator
 
             var session = new SelectionOverlaySession(
                 snapshots,
-                sourceSnapshot.Windows,
-                pixelEdgeDetectors);
+                sourceSnapshot.Windows);
             var overlayDispatcher = DispatcherQueue.GetForCurrentThread()
                 ?? _uiDispatcher
                 ?? throw new InvalidOperationException("Overlay creation requires a UI dispatcher.");
@@ -173,9 +172,16 @@ public sealed class CaptureCoordinator
                 result => RouteOverlayDecision(result, snapshots, sourceSnapshot),
                 OnOverlayReleased,
                 Log);
+            controller.PixelEdgeDetectionRequested += snapshot =>
+                _ = PreparePixelEdgeDetectorAsync(
+                    controller,
+                    snapshot,
+                    overlayDispatcher,
+                    captureStarted);
             _activeOverlaySession = controller;
             controller.Show();
-            Log($"overlay session shown: {snapshots.Count} display(s)");
+            Log($"overlay session shown: {snapshots.Count} display(s), " +
+                $"elapsed={ElapsedMilliseconds(captureStarted):F0}ms");
         }
         catch (Exception ex)
         {
@@ -187,6 +193,48 @@ public sealed class CaptureCoordinator
                 activeSession.Dispose();
         }
     }
+
+    private async Task PreparePixelEdgeDetectorAsync(
+        CaptureOverlaySessionController controller,
+        DisplaySnapshot snapshot,
+        DispatcherQueue dispatcher,
+        long captureStarted)
+    {
+        var cancellationToken = controller.LifetimeToken;
+        try
+        {
+            var detector = await Task.Run(() =>
+                FrozenPixelEdgeDetectorFactory.TryCreate(snapshot, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!dispatcher.TryEnqueue(() =>
+                {
+                    if (!ReferenceEquals(_activeOverlaySession, controller)
+                        || !controller.TrySetPixelEdgeDetector(snapshot.DisplayId, detector))
+                    {
+                        return;
+                    }
+
+                    Log($"pixel-edge index ready: display={snapshot.DisplayId}, " +
+                        $"elapsed={ElapsedMilliseconds(captureStarted):F0}ms");
+                }))
+            {
+                Log("pixel-edge indexes completed after the overlay dispatcher stopped");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log($"pixel-edge indexing canceled: display={snapshot.DisplayId}");
+        }
+        catch (Exception error)
+        {
+            // Pixel snapping is optional. Window snapping and manual selection remain usable.
+            Log($"pixel-edge preparation failed: {error.Message}");
+        }
+    }
+
+    private static double ElapsedMilliseconds(long startedTimestamp)
+        => Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds;
 
     private CaptureOverlayDecisionHandling RouteOverlayDecision(
         SelectionOverlayDecision result,

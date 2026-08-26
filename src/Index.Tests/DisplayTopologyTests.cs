@@ -58,6 +58,30 @@ public sealed class DisplayTopologyTests
         Assert.False(DisplayTopology.Matches(invalid, invalid));
     }
 
+    [Fact]
+    public void CapturedDisplayCanMatchWithinALargerCurrentTopology()
+    {
+        var captured = Snapshot(
+            Display("secondary", "External", 0, 1080, 1920, 1200, 1.0));
+        var current = Snapshot(
+            Display("primary", "Internal", 0, 0, 1920, 1080, 1.0, true),
+            Display("SECONDARY", "External", 0, 1080, 1920, 1200, 1.0));
+
+        Assert.True(DisplayTopology.ContainsMatchingDisplays(captured, current));
+    }
+
+    [Fact]
+    public void CapturedDisplayRejectsCoordinateChangesWithinLargerTopology()
+    {
+        var captured = Snapshot(
+            Display("secondary", "External", 0, 1080, 1920, 1200, 1.0));
+        var current = Snapshot(
+            Display("primary", "Internal", 0, 0, 1920, 1080, 1.0, true),
+            Display("secondary", "External", 1920, 0, 1920, 1200, 1.0));
+
+        Assert.False(DisplayTopology.ContainsMatchingDisplays(captured, current));
+    }
+
     private static DisplayTopologySnapshot Snapshot(params DisplayTopologyEntry[] displays)
         => new(displays);
 

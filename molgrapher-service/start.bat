@@ -12,9 +12,6 @@ if "%USE_PROXY%"=="1" (
     set HTTPS_PROXY=%PROXY%
     set http_proxy=%PROXY%
     set https_proxy=%PROXY%
-    REM git 代理
-    git config --global http.proxy %PROXY%
-    git config --global https.proxy %PROXY%
 )
 
 REM === 1. Clone MolGrapher 仓库（如果不存在）===

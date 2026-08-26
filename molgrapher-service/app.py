@@ -229,6 +229,44 @@ def _load_model():
 
     _DM.get_dataloader = _patched_get_dl
 
+    # MolGrapher eagerly creates several PaddleOCR pipelines even though most
+    # predicted graphs contain no abbreviation placeholder. Preserve the full
+    # feature, but defer those OCR model allocations until a graph actually
+    # needs abbreviation recognition.
+    from molgrapher.models.abbreviation_detector import (
+        AbbreviationDetector as _AbbreviationDetector,
+        AbbreviationDetectorCPU as _AbbreviationDetectorCPU,
+    )
+
+    _original_abbreviation_init = _AbbreviationDetectorCPU.__init__
+
+    def _lazy_abbreviation_init(
+        self,
+        config,
+        image_size=(1024, 1024),
+        force_cpu=True,
+        force_no_multiprocessing=False,
+        angle_recognition=False,
+    ):
+        _AbbreviationDetector.__init__(
+            self,
+            config,
+            image_size,
+            force_cpu,
+            force_no_multiprocessing,
+            angle_recognition,
+        )
+        self._index_ocr_init_args = (
+            config,
+            image_size,
+            force_cpu,
+            force_no_multiprocessing,
+            angle_recognition,
+        )
+        self._index_ocr_initialized = False
+
+    _AbbreviationDetectorCPU.__init__ = _lazy_abbreviation_init
+
     from molgrapher.models.molgrapher_model import MolgrapherModel
 
     _model = MolgrapherModel(
@@ -243,18 +281,31 @@ def _load_model():
         }
     )
 
-    if _abbreviation_filter_enabled:
-        original_mp_run = _model.abbreviation_detector.mp_run
+    abbreviation_detector = _model.abbreviation_detector
 
-        def _filtered_mp_run(images_filenames, graphs, bonds_sizes, filter=False):
-            return original_mp_run(
-                images_filenames,
-                graphs,
-                bonds_sizes,
-                filter=True,
+    def _lazy_mp_run(images_filenames, graphs, bonds_sizes, filter=False):
+        should_filter = _abbreviation_filter_enabled
+        if should_filter and not any(
+            graph.needs_abbreviations_detection() for graph in graphs
+        ):
+            return [[] for _ in graphs]
+
+        if not abbreviation_detector._index_ocr_initialized:
+            _original_abbreviation_init(
+                abbreviation_detector,
+                *abbreviation_detector._index_ocr_init_args,
             )
+            abbreviation_detector._index_ocr_initialized = True
 
-        _model.abbreviation_detector.mp_run = _filtered_mp_run
+        return _AbbreviationDetector.mp_run(
+            abbreviation_detector,
+            images_filenames,
+            graphs,
+            bonds_sizes,
+            filter=should_filter,
+        )
+
+    abbreviation_detector.mp_run = _lazy_mp_run
 
     if os.environ.get("MOLGRAPHER_OPENVINO", "1") != "0":
         try:
@@ -332,6 +383,9 @@ def _run_inference(image_path: str) -> RecognizeResponse:
 @app.get("/health")
 def health():
     return {
+        "service": "molgrapher",
+        "service_version": "1.0.0",
+        "protocol_version": "1",
         "status": "ok",
         "model_loaded": _model is not None,
         "inference_backend": {
@@ -342,6 +396,14 @@ def health():
         "optimizations": {
             "caption_removal": _caption_removal_enabled,
             "abbreviation_filter": _abbreviation_filter_enabled,
+            "abbreviation_ocr_loaded": bool(
+                _model is not None
+                and getattr(
+                    _model.abbreviation_detector,
+                    "_index_ocr_initialized",
+                    True,
+                )
+            ),
             "recognition_cache": True,
         },
     }

@@ -5,9 +5,9 @@ namespace Index.UI.Gallery;
 public sealed record ThumbnailLoaderOptions
 {
     public int MaxConcurrentLoads { get; init; } = 4;
-    public long MaxCacheBytes { get; init; } = 128L * 1024 * 1024;
-    public int MaxCacheItems { get; init; } = 400;
-    public int MaxPixelDimension { get; init; } = 640;
+    public long MaxCacheBytes { get; init; } = 48L * 1024 * 1024;
+    public int MaxCacheItems { get; init; } = 160;
+    public int MaxPixelDimension { get; init; } = 512;
 }
 
 /// <summary>

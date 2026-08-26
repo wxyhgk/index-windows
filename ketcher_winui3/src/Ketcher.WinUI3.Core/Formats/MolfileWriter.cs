@@ -26,7 +26,7 @@ public static class MolfileWriter
         foreach (var atom in atoms)
         {
             sb.Append(atom.Position.X.ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(10));
-            sb.Append(atom.Position.Y.ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(10));
+            sb.Append((-atom.Position.Y).ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(10));
             sb.Append("0.0000".PadLeft(10));
             sb.Append(Element.ToMolField(atom.Element));
             sb.Append(atom.Isotope.ToString().PadLeft(3));
@@ -81,7 +81,7 @@ public static class MolfileWriter
         foreach (var atom in atoms)
         {
             sb.Append(atom.Position.X.ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(10));
-            sb.Append(atom.Position.Y.ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(10));
+            sb.Append((-atom.Position.Y).ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(10));
             sb.Append("0.0000".PadLeft(10));
             sb.Append(Element.ToMolField(atom.Element));
             sb.Append(atom.Isotope.ToString().PadLeft(3));

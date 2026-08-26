@@ -128,11 +128,11 @@ public class SdfParserTests
 
         var atoms = doc.Atoms.ToList();
         Assert.Equal(0.0, atoms[0].Position.X, 4);
-        Assert.Equal(0.866, atoms[0].Position.Y, 3);
+        Assert.Equal(-0.866, atoms[0].Position.Y, 3);
         Assert.Equal(1.5, atoms[1].Position.X, 4);
-        Assert.Equal(0.866, atoms[1].Position.Y, 3);
+        Assert.Equal(-0.866, atoms[1].Position.Y, 3);
         Assert.Equal(1.5, atoms[2].Position.X, 4);
-        Assert.Equal(-0.866, atoms[2].Position.Y, 3);
+        Assert.Equal(0.866, atoms[2].Position.Y, 3);
 
         Assert.Equal(2, doc.Properties.Count);
         Assert.Contains(doc.Properties, p => p.Key == "smi" && p.Value == "CC=O");

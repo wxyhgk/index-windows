@@ -22,7 +22,8 @@ internal sealed class ShotFileStore
         => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
     public string OriginalPath(string sha256) => Path.Combine(OriginalsDirectory, $"{sha256}.png");
-    public string ThumbnailPath(string sha256) => Path.Combine(ThumbnailsDirectory, $"{sha256}.jpg");
+    public string ThumbnailPath(string sha256) => Path.Combine(ThumbnailsDirectory, $"{sha256}.png");
+    public string LegacyThumbnailPath(string sha256) => Path.Combine(ThumbnailsDirectory, $"{sha256}.jpg");
 
     public async Task<bool> WriteOriginalAsync(
         string sha256,
@@ -64,7 +65,7 @@ internal sealed class ShotFileStore
         if (source is null)
             return;
 
-        const int maxDimension = 640;
+        const int maxDimension = 512;
         var ratio = Math.Min(1d, maxDimension / (double)Math.Max(source.Width, source.Height));
         var width = Math.Max(1, (int)Math.Round(source.Width * ratio));
         var height = Math.Max(1, (int)Math.Round(source.Height * ratio));
@@ -72,7 +73,7 @@ internal sealed class ShotFileStore
         if (resized is null)
             return;
         using var image = SKImage.FromBitmap(resized);
-        using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, 84);
+        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
         if (encoded is null)
             return;
         var stage = Path.Combine(ThumbnailsDirectory, $".{sha256}.{Guid.NewGuid():N}.tmp");
@@ -99,5 +100,6 @@ internal sealed class ShotFileStore
     {
         File.Delete(OriginalPath(sha256));
         File.Delete(ThumbnailPath(sha256));
+        File.Delete(LegacyThumbnailPath(sha256));
     }
 }

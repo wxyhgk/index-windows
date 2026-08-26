@@ -17,6 +17,9 @@ public sealed class ScreenFreezer : CaptureSource, IDisplayTopologyProvider
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X, Y; }
+
     // GetMonitorInfoW requires MONITORINFOEXW.cbSize (104 bytes on Windows).
     // Without the Unicode charset Marshal.SizeOf reports the ANSI layout and
     // GetMonitorInfoW fails with ERROR_INVALID_PARAMETER (87).
@@ -42,12 +45,19 @@ public sealed class ScreenFreezer : CaptureSource, IDisplayTopologyProvider
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
     }
 
-    private sealed record MonitorCaptureTarget(DisplayTopologyEntry Display);
+    private sealed record MonitorCaptureTarget(IntPtr Handle, DisplayTopologyEntry Display);
 
     private delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
@@ -73,24 +83,29 @@ public sealed class ScreenFreezer : CaptureSource, IDisplayTopologyProvider
     public async Task<IReadOnlyList<DisplaySnapshot>> MakeSnapshotsAsync()
     {
         var monitors = EnumAllMonitors();
+        var selectedMonitor = SelectMonitorAtCursor(monitors);
+        var captureOrder = new[] { selectedMonitor }
+            .Concat(monitors.Where(monitor => !ReferenceEquals(monitor, selectedMonitor)))
+            .ToArray();
         // 在后台线程执行 GDI 捕获，避免阻塞 UI
         var result = await Task.Run(() =>
         {
-            var list = new List<DisplaySnapshot>(monitors.Count);
-            for (int i = 0; i < monitors.Count; i++)
+            var list = new List<DisplaySnapshot>(captureOrder.Length);
+            for (int index = 0; index < captureOrder.Length; index++)
             {
-                var monitor = monitors[i];
+                var monitor = captureOrder[index];
                 var bounds = monitor.Display.Bounds;
-                int w = bounds.Right - bounds.Left;
-                int h = bounds.Bottom - bounds.Top;
-                var png = CaptureRegion(bounds, w, h);
+                int width = bounds.Right - bounds.Left;
+                int height = bounds.Bottom - bounds.Top;
+                var png = CaptureRegion(bounds, width, height);
                 list.Add(new DisplaySnapshot
                 {
                     DisplayId = monitor.Display.DisplayId,
                     DeviceName = monitor.Display.DeviceName,
-                    DisplayIndex = i,
-                    Width = w,
-                    Height = h,
+                    DisplayIndex = monitors.IndexOf(monitor),
+                    IsPrimary = monitor.Display.IsPrimary,
+                    Width = width,
+                    Height = height,
                     DpiScale = monitor.Display.DpiScale,
                     Left = bounds.Left,
                     Top = bounds.Top,
@@ -101,6 +116,20 @@ public sealed class ScreenFreezer : CaptureSource, IDisplayTopologyProvider
         });
 
         return result;
+    }
+
+    private static MonitorCaptureTarget SelectMonitorAtCursor(
+        IReadOnlyList<MonitorCaptureTarget> monitors)
+    {
+        if (monitors.Count == 0)
+            throw new InvalidOperationException("Windows did not report an active display.");
+
+        if (!GetCursorPos(out var cursor))
+            return monitors[0];
+
+        const uint monitorDefaultToNearest = 2;
+        var handle = MonitorFromPoint(cursor, monitorDefaultToNearest);
+        return monitors.FirstOrDefault(monitor => monitor.Handle == handle) ?? monitors[0];
     }
 
     private static List<MonitorCaptureTarget> EnumAllMonitors()
@@ -126,6 +155,7 @@ public sealed class ScreenFreezer : CaptureSource, IDisplayTopologyProvider
                     : 1.0;
                 var identity = ResolveIdentity(info.szDevice);
                 list.Add(new MonitorCaptureTarget(
+                    hMon,
                     new DisplayTopologyEntry(
                         identity.DisplayId,
                         identity.DeviceName,

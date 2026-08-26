@@ -6,11 +6,12 @@ using SkiaSharp;
 namespace Index.Storage;
 
 /// <summary>不可变原图文件与 Shot/Revision 数据库的统一入口。</summary>
-public sealed class ShotStore : IShotStore
+public sealed partial class ShotStore : IShotStore, IShotSearchSource
 {
     private readonly IndexDatabase _database;
     private readonly ShotFileStore _files;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly SemaphoreSlim _thumbnailMigrationGate = new(2, 2);
 
     private ShotStore(string rootDirectory)
     {
@@ -25,6 +26,37 @@ public sealed class ShotStore : IShotStore
 
     public string OriginalPath(ShotRecord shot) => _files.OriginalPath(shot.Sha256);
     public string ThumbnailPath(ShotRecord shot) => _files.ThumbnailPath(shot.Sha256);
+    public string LegacyThumbnailPath(ShotRecord shot) => _files.LegacyThumbnailPath(shot.Sha256);
+
+    public async Task<bool> EnsureLosslessThumbnailAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(shot);
+        var target = ThumbnailPath(shot);
+        if (File.Exists(target))
+            return true;
+
+        var original = OriginalPath(shot);
+        if (!File.Exists(original))
+            return false;
+
+        await _thumbnailMigrationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (File.Exists(target))
+                return true;
+            var png = await File.ReadAllBytesAsync(original, cancellationToken);
+            await Task.Run(
+                () => _files.EnsureThumbnail(shot.Sha256, png),
+                cancellationToken);
+            return File.Exists(target);
+        }
+        finally
+        {
+            _thumbnailMigrationGate.Release();
+        }
+    }
 
     public static async Task<ShotStore> OpenAsync(
         string rootDirectory,

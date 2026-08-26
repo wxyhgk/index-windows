@@ -19,7 +19,6 @@ public sealed class SelectionOverlaySession : IDisposable
     private sealed record Entry(
         DisplaySnapshot Snapshot,
         IReadOnlyList<WindowSelectionTarget> WindowTargets,
-        FrozenPixelEdgeDetector? PixelEdgeDetector,
         OverlayWindow Window);
 
     private readonly SelectionOverlaySessionState _state;
@@ -29,8 +28,7 @@ public sealed class SelectionOverlaySession : IDisposable
 
     public SelectionOverlaySession(
         IReadOnlyList<DisplaySnapshot> snapshots,
-        IReadOnlyList<SourceWindowInfo> windows,
-        IReadOnlyDictionary<string, FrozenPixelEdgeDetector>? pixelEdgeDetectors = null)
+        IReadOnlyList<SourceWindowInfo> windows)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
         if (snapshots.Count == 0)
@@ -47,10 +45,9 @@ public sealed class SelectionOverlaySession : IDisposable
                 snapshot,
                 windows,
                 checked((uint)Environment.ProcessId));
-            FrozenPixelEdgeDetector? pixelEdgeDetector = null;
-            pixelEdgeDetectors?.TryGetValue(snapshot.DisplayId, out pixelEdgeDetector);
-            var entry = new Entry(snapshot, targets, pixelEdgeDetector, window);
+            var entry = new Entry(snapshot, targets, window);
             window.InteractionActivated += OnInteractionActivated;
+            window.PixelEdgeDetectionRequested += OnPixelEdgeDetectionRequested;
             window.CaptureRequested += decision => Complete(entry, decision);
             window.CancelRequested += OnCancelRequested;
             window.Closed += OnWindowClosed;
@@ -59,6 +56,7 @@ public sealed class SelectionOverlaySession : IDisposable
     }
 
     public event Action<SelectionOverlayDecision>? CaptureRequested;
+    public event Action<DisplaySnapshot>? PixelEdgeDetectionRequested;
     public event Action? Canceled;
 
     /// <summary>
@@ -69,6 +67,19 @@ public sealed class SelectionOverlaySession : IDisposable
     public bool DismissOnCapture { get; set; } = true;
 
     public bool IsActive => !_state.IsTerminal && !_isDismissed;
+
+    public void SetPixelEdgeDetector(
+        string displayId,
+        FrozenPixelEdgeDetector? detector)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayId);
+        if (!IsActive)
+            return;
+
+        var entry = _entries.FirstOrDefault(candidate =>
+            string.Equals(candidate.Snapshot.DisplayId, displayId, StringComparison.OrdinalIgnoreCase));
+        entry?.Window.SetPixelEdgeDetector(detector);
+    }
 
     public void Show()
     {
@@ -83,8 +94,7 @@ public sealed class SelectionOverlaySession : IDisposable
             foreach (var entry in _entries)
                 entry.Window.Show(
                     entry.Snapshot,
-                    entry.WindowTargets,
-                    entry.PixelEdgeDetector);
+                    entry.WindowTargets);
 
             var preferred = PreferredEntryAtCursor() ?? _entries.FirstOrDefault();
             preferred?.Window.Activate();
@@ -157,6 +167,13 @@ public sealed class SelectionOverlaySession : IDisposable
         CaptureRequested?.Invoke(new SelectionOverlayDecision(entry.Snapshot, decision));
     }
 
+    private void OnPixelEdgeDetectionRequested(OverlayWindow window)
+    {
+        var entry = _entries.FirstOrDefault(candidate => ReferenceEquals(candidate.Window, window));
+        if (entry is not null && IsActive)
+            PixelEdgeDetectionRequested?.Invoke(entry.Snapshot);
+    }
+
     private void DismissAll()
     {
         if (_isDismissed) return;
@@ -165,6 +182,7 @@ public sealed class SelectionOverlaySession : IDisposable
         foreach (var entry in _entries)
         {
             entry.Window.InteractionActivated -= OnInteractionActivated;
+            entry.Window.PixelEdgeDetectionRequested -= OnPixelEdgeDetectionRequested;
             entry.Window.CancelRequested -= OnCancelRequested;
             entry.Window.Closed -= OnWindowClosed;
             entry.Window.Dismiss();

@@ -200,7 +200,7 @@ public static class MolfileParser
                 $"Atom line {expectedIndex} too short ({line.Length} chars, need at least {minLen})", lineNumber);
 
         double x = ParseCoordinate(line, xStart, xEnd, "x", lineNumber);
-        double y = ParseCoordinate(line, yStart, yEnd, "y", lineNumber);
+        double y = -ParseCoordinate(line, yStart, yEnd, "y", lineNumber);
         double z = ParseCoordinate(line, zStart, zEnd, "z", lineNumber);
         string element = Element.ParseSymbol(line[elemStart..(elemStart + 3)]);
         int isotope = ParseIntField(line, elemStart + 3, elemStart + 6, "isotope", lineNumber);

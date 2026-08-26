@@ -36,6 +36,7 @@ public sealed class DisplaySnapshot : ICaptureDisplayIdentitySource
     /// <summary>User-facing monitor name reported by Windows.</summary>
     public required string DeviceName { get; init; }
     public required int DisplayIndex { get; init; }
+    public bool IsPrimary { get; init; }
     public required int Width { get; init; }
     public required int Height { get; init; }
     /// <summary>DPI 缩放倍率（物理像素 / 逻辑点）。</summary>
