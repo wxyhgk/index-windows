@@ -228,3 +228,12 @@ dotnet publish src/Index/Index.csproj `
 - 未经用户明确要求，不提交、推送、打 tag 或提升版本号。
 - 不删除当前 Ketcher、模型、缓存或用户图库数据，除非用户明确授权并已核对目标。
 - 修改后只汇报本次实际验证过的结果。
+
+## 15. Git Submodule
+
+- 所有 submodule 的引入、更新、补丁、许可证和构建发布必须遵守
+  [`docs/submodules.md`](docs/submodules.md)。
+- 新增通用第三方源码统一放在 `third_party/<project-name>`，固定到审核过的完整 commit，并递归
+  固定其嵌套 submodule。
+- submodule 工作树必须保持 clean；长期修改使用受控 fork，不能依赖开发者本地未提交内容。
+- 驱动源码不得进入常规 .NET 构建；驱动安装必须可选、显式申请管理员权限并提供恢复路径。

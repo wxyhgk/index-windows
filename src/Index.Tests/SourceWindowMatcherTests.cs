@@ -18,10 +18,8 @@ public sealed class SourceWindowMatcherTests
             new SourceWindowBounds(100, 80, 900, 700)));
     }
 
-    [Theory]
-    [InlineData(WindowsWindowCandidatePolicy.TransparentExtendedStyle)]
-    [InlineData(WindowsWindowCandidatePolicy.NoRedirectionBitmapExtendedStyle)]
-    public void WindowCandidatePolicyRejectsNonVisualSurfaces(uint extendedStyle)
+    [Fact]
+    public void WindowCandidatePolicyRejectsTransparentSurface()
     {
         Assert.False(WindowsWindowCandidatePolicy.ShouldInclude(
             isShellWindow: false,
@@ -29,7 +27,20 @@ public sealed class SourceWindowMatcherTests
             isCloaked: false,
             isMinimized: false,
             style: WindowsWindowCandidatePolicy.VisibleStyle,
-            extendedStyle,
+            extendedStyle: WindowsWindowCandidatePolicy.TransparentExtendedStyle,
+            new SourceWindowBounds(100, 80, 900, 700)));
+    }
+
+    [Fact]
+    public void WindowCandidatePolicyAcceptsNoRedirectionBitmapApplicationWindow()
+    {
+        Assert.True(WindowsWindowCandidatePolicy.ShouldInclude(
+            isShellWindow: false,
+            isVisible: true,
+            isCloaked: false,
+            isMinimized: false,
+            style: WindowsWindowCandidatePolicy.VisibleStyle,
+            extendedStyle: WindowsWindowCandidatePolicy.NoRedirectionBitmapExtendedStyle,
             new SourceWindowBounds(100, 80, 900, 700)));
     }
 
@@ -92,9 +103,10 @@ public sealed class SourceWindowMatcherTests
             new SourceWindowInfo(2, 99, "Index", new SourceWindowBounds(2100, 0, 2300, 200))
         };
 
-        var targets = WindowSelectionTargetMapper.Create(display, windows, excludedProcessId: 99);
+        var targets = WindowSelectionTargetMapper.Create(display, windows);
 
-        var target = Assert.Single(targets);
+        Assert.Equal(2, targets.Count);
+        var target = targets[0];
         Assert.Equal(new SelectionRect(0, 80, 480, 640), target.Bounds);
     }
 
@@ -107,7 +119,7 @@ public sealed class SourceWindowMatcherTests
             new SourceWindowInfo(1, 10, "front", new SourceWindowBounds(100, 100, 600, 600)),
             new SourceWindowInfo(2, 11, "back", new SourceWindowBounds(0, 0, 1000, 800))
         };
-        var targets = WindowSelectionTargetMapper.Create(display, windows, excludedProcessId: 99);
+        var targets = WindowSelectionTargetMapper.Create(display, windows);
 
         Assert.Equal((nint)1, WindowSelectionTargetMapper.HitTest(targets, new SelectionPoint(200, 200))?.Handle);
         Assert.Equal((nint)2, WindowSelectionTargetMapper.HitTest(targets, new SelectionPoint(800, 700))?.Handle);
@@ -142,7 +154,7 @@ public sealed class SourceWindowMatcherTests
                 HierarchyDepth: 0)
         };
 
-        var targets = WindowSelectionTargetMapper.Create(display, windows, excludedProcessId: 99);
+        var targets = WindowSelectionTargetMapper.Create(display, windows);
 
         Assert.Equal((nint)3, WindowSelectionTargetMapper.HitTest(targets, new SelectionPoint(300, 300))?.Handle);
         Assert.Equal((nint)2, WindowSelectionTargetMapper.HitTest(targets, new SelectionPoint(150, 140))?.Handle);
@@ -150,7 +162,7 @@ public sealed class SourceWindowMatcherTests
     }
 
     [Fact]
-    public void TargetMapperExcludesAllWindowsOwnedByIndexIncludingNestedControls()
+    public void TargetMapperKeepsApplicationWindowsIncludingNestedControls()
     {
         var display = Display(left: 0, top: 0, width: 1000, height: 800, scale: 1);
         var windows = new[]
@@ -178,10 +190,9 @@ public sealed class SourceWindowMatcherTests
                 HierarchyDepth: 0)
         };
 
-        var targets = WindowSelectionTargetMapper.Create(display, windows, excludedProcessId: 99);
+        var targets = WindowSelectionTargetMapper.Create(display, windows);
 
-        var target = Assert.Single(targets);
-        Assert.Equal((nint)3, target.Handle);
+        Assert.Equal(new nint[] { 2, 1, 3 }, targets.Select(target => target.Handle));
     }
 
     private static DisplaySnapshot Display(int left, int top, int width, int height, double scale) => new()

@@ -12,6 +12,7 @@ namespace Index.App;
 /// </summary>
 internal readonly record struct CaptureOverlayDecisionHandling(
     bool DeferReleaseUntilCompleted,
+    bool ContinueCaptureAfterRelease,
     Func<Task> Execute);
 
 /// <summary>
@@ -22,7 +23,7 @@ internal sealed class CaptureOverlaySessionController : IDisposable
     private readonly SelectionOverlaySession _session;
     private readonly DispatcherQueue _dispatcher;
     private readonly Func<SelectionOverlayDecision, CaptureOverlayDecisionHandling> _handleDecision;
-    private readonly Action<CaptureOverlaySessionController> _released;
+    private readonly Action<CaptureOverlaySessionController, bool> _released;
     private readonly Action<string> _log;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private int _isReleased;
@@ -31,7 +32,7 @@ internal sealed class CaptureOverlaySessionController : IDisposable
         SelectionOverlaySession session,
         DispatcherQueue dispatcher,
         Func<SelectionOverlayDecision, CaptureOverlayDecisionHandling> handleDecision,
-        Action<CaptureOverlaySessionController> released,
+        Action<CaptureOverlaySessionController, bool> released,
         Action<string> log)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -76,12 +77,14 @@ internal sealed class CaptureOverlaySessionController : IDisposable
         var handling = _handleDecision(decision);
         if (handling.DeferReleaseUntilCompleted)
         {
-            _ = ExecuteThenReleaseAsync(handling.Execute);
+            _ = ExecuteThenReleaseAsync(
+                handling.Execute,
+                handling.ContinueCaptureAfterRelease);
             return;
         }
 
         // Preserve the normal capture sequence: dismiss the overlay before action preparation.
-        Release();
+        Release(handling.ContinueCaptureAfterRelease);
         _ = handling.Execute();
     }
 
@@ -90,7 +93,9 @@ internal sealed class CaptureOverlaySessionController : IDisposable
     private void OnPixelEdgeDetectionRequested(DisplaySnapshot snapshot)
         => PixelEdgeDetectionRequested?.Invoke(snapshot);
 
-    private async Task ExecuteThenReleaseAsync(Func<Task> execute)
+    private async Task ExecuteThenReleaseAsync(
+        Func<Task> execute,
+        bool continueCaptureAfterRelease)
     {
         try
         {
@@ -100,12 +105,12 @@ internal sealed class CaptureOverlaySessionController : IDisposable
         {
             // Window lifetime belongs to the UI thread. For pinning, Execute returns only after
             // the movable surface has been presented, preventing a visible handoff gap.
-            if (!_dispatcher.TryEnqueue(Release))
+            if (!_dispatcher.TryEnqueue(() => Release(continueCaptureAfterRelease)))
                 _log("Unable to release overlay after pin presentation");
         }
     }
 
-    private void Release()
+    private void Release(bool continueCaptureAfterRelease = false)
     {
         if (Interlocked.Exchange(ref _isReleased, 1) != 0)
             return;
@@ -117,6 +122,6 @@ internal sealed class CaptureOverlaySessionController : IDisposable
         PixelEdgeDetectionRequested = null;
         _session.Dispose();
         _lifetimeCancellation.Dispose();
-        _released(this);
+        _released(this, continueCaptureAfterRelease);
     }
 }

@@ -65,6 +65,7 @@ public sealed class CapturePersistenceService : ICapturePersistenceService
                 WindowTitle = application?.WindowTitle,
                 SourceUrl = sourceUrl,
                 DisplayIndex = request.Display.DisplayIndex,
+                DisplayName = request.Display.DeviceName,
                 RegionX = request.GlobalRegion.Left,
                 RegionY = request.GlobalRegion.Top,
                 RegionWidth = request.Selection.Width,

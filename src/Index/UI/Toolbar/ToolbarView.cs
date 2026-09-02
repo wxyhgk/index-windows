@@ -268,6 +268,19 @@ public sealed class ToolbarView : Canvas
         if (control.Id == AnnotationToolbarControlIds.Tool(AnnotationTool.Counter))
             return CreateCounterIcon(foreground);
 
+        if (control.Id == ToolbarCommandIds.HighResolution4K)
+        {
+            return new TextBlock
+            {
+                Text = "4K",
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                Foreground = foreground,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+        }
+
         return CreateFluentIcon(
             control.Id,
             control.Glyph,

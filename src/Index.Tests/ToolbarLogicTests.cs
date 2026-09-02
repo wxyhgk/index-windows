@@ -60,7 +60,7 @@ public sealed class ToolbarLogicTests
     }
 
     [Fact]
-    public void CaptureDefaults_PutPinBeforeCopyCompleteAndCancel()
+    public void CaptureDefaults_Put4KBetweenCopyAndComplete()
     {
         var registry = new ToolbarRegistry();
         BuiltinToolbarControls.RegisterCaptureDefaults(registry);
@@ -68,8 +68,35 @@ public sealed class ToolbarLogicTests
         var ids = registry.ControlsFor(Context).Select(control => control.Id).ToArray();
 
         Assert.Equal(
-            [ToolbarCommandIds.Pin, ToolbarCommandIds.Copy, ToolbarCommandIds.Complete, ToolbarCommandIds.Cancel],
+            [
+                ToolbarCommandIds.Pin,
+                ToolbarCommandIds.Copy,
+                ToolbarCommandIds.HighResolution4K,
+                ToolbarCommandIds.Complete,
+                ToolbarCommandIds.Cancel
+            ],
             ids);
+    }
+
+    [Fact]
+    public void CommandControl_UsesHostEnabledPolicy()
+    {
+        var control = new CommandToolbarControl(
+            ToolbarCommandIds.HighResolution4K,
+            "4K",
+            "4K",
+            ToolbarGroup.Actions,
+            0,
+            false,
+            ToolbarScope.Capture);
+        var context = new ToolbarContext(
+            new AnnotationState(),
+            ToolbarScope.Capture,
+            _ => { },
+            isActionEnabled: id => id != ToolbarCommandIds.HighResolution4K);
+
+        Assert.False(control.IsEnabled(context));
+        Assert.False(control.IsBusy(context));
     }
 
     [Fact]

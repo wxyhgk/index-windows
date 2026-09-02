@@ -5,7 +5,8 @@ namespace Index.Platform;
 /// <summary>Window-source context frozen when capture starts.</summary>
 public sealed record SourceApplicationSnapshot(
     SourceApplicationInfo? ForegroundApplication,
-    IReadOnlyList<SourceWindowInfo> Windows);
+    IReadOnlyList<SourceWindowInfo> Windows,
+    nint ForegroundWindowHandle = default);
 
 /// <summary>Windows application source metadata that can be persisted with a capture.</summary>
 public sealed record SourceApplicationInfo(
@@ -90,7 +91,10 @@ public static class WindowsWindowCandidatePolicy
         && !isCloaked
         && !isMinimized
         && (style & VisibleStyle) != 0
-        && (extendedStyle & (TransparentExtendedStyle | NoRedirectionBitmapExtendedStyle)) == 0;
+        // WS_EX_NOREDIRECTIONBITMAP is also used by real DirectComposition applications such
+        // as Edge. It means DWM does not keep the legacy redirected bitmap; it does not make the
+        // HWND invisible or ineligible for Windows Graphics Capture and window hit testing.
+        && (extendedStyle & TransparentExtendedStyle) == 0;
 }
 
 /// <summary>A top-level window boundary converted to one overlay's logical coordinate space.</summary>
@@ -98,10 +102,14 @@ public sealed record WindowSelectionTarget(
     nint Handle,
     SourceWindowBounds PhysicalBounds,
     SelectionRect Bounds,
-    int HierarchyDepth = 0)
+    int HierarchyDepth = 0,
+    nint RootHandle = default)
 {
     public bool IsTopLevel => HierarchyDepth == 0;
     public bool IsPixelRegion => Handle == 0;
+    public nint CaptureHandle => IsPixelRegion
+        ? nint.Zero
+        : RootHandle != nint.Zero ? RootHandle : Handle;
 }
 
 /// <summary>
@@ -112,8 +120,7 @@ public static class WindowSelectionTargetMapper
 {
     public static IReadOnlyList<WindowSelectionTarget> Create(
         DisplaySnapshot display,
-        IReadOnlyList<SourceWindowInfo> windows,
-        uint excludedProcessId)
+        IReadOnlyList<SourceWindowInfo> windows)
     {
         ArgumentNullException.ThrowIfNull(display);
         ArgumentNullException.ThrowIfNull(windows);
@@ -128,8 +135,6 @@ public static class WindowSelectionTargetMapper
 
         foreach (var window in windows)
         {
-            if (window.ProcessId == excludedProcessId) continue;
-
             var clipped = Intersect(window.Bounds, displayBounds);
             if (clipped.Width <= 20 || clipped.Height <= 20) continue;
 
@@ -141,7 +146,8 @@ public static class WindowSelectionTargetMapper
                     (clipped.Top - display.Top) / scale,
                     clipped.Width / scale,
                     clipped.Height / scale),
-                window.HierarchyDepth));
+                window.HierarchyDepth,
+                window.RootHandle));
         }
 
         return result;

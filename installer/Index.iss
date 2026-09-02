@@ -3,7 +3,7 @@
 #define MyAppExeName "Index.exe"
 
 #ifndef AppVersion
-  #define AppVersion "0.0.8"
+  #define AppVersion "0.0.12"
 #endif
 #ifndef SourceDir
   #error SourceDir must point to the self-contained publish directory.

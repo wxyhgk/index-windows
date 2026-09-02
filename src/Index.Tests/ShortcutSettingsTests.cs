@@ -12,7 +12,9 @@ public sealed class ShortcutSettingsTests
         settings.Validate();
         Assert.NotEqual(settings.Capture, settings.Gallery);
         Assert.NotEqual(settings.Gallery, settings.Clipboard);
+        Assert.NotEqual(settings.Capture, settings.VirtualWindow);
         Assert.Equal("Ctrl + Shift + A", settings.Capture.DisplayString);
+        Assert.Equal("Ctrl + Shift + 4", settings.VirtualWindow.DisplayString);
         Assert.Equal("Ctrl + Shift + G", settings.Gallery.DisplayString);
         Assert.Equal("Ctrl + Shift + V", settings.Clipboard.DisplayString);
     }
@@ -30,7 +32,9 @@ public sealed class ShortcutSettingsTests
             var expected = new ShortcutSettings(
                 new KeyboardShortcut(0x53, HotKeyModifiers.Control | HotKeyModifiers.Alt),
                 new KeyboardShortcut(0x4C, HotKeyModifiers.Control | HotKeyModifiers.Shift),
-                new KeyboardShortcut(0x56, HotKeyModifiers.Control | HotKeyModifiers.Alt));
+                new KeyboardShortcut(0x56, HotKeyModifiers.Control | HotKeyModifiers.Alt),
+                new KeyboardShortcut(0x34, HotKeyModifiers.Control | HotKeyModifiers.Alt),
+                Automatic4KCapture: true);
 
             store.Save(expected);
 
@@ -52,11 +56,16 @@ public sealed class ShortcutSettingsTests
             new ShortcutSettings(
                 noModifier,
                 KeyboardShortcut.GalleryDefault,
-                KeyboardShortcut.ClipboardDefault).Validate());
+                KeyboardShortcut.ClipboardDefault,
+                KeyboardShortcut.VirtualWindowDefault).Validate());
 
         var duplicate = KeyboardShortcut.CaptureDefault;
         Assert.Throws<ArgumentException>(() =>
-            new ShortcutSettings(duplicate, duplicate, KeyboardShortcut.ClipboardDefault).Validate());
+            new ShortcutSettings(
+                duplicate,
+                duplicate,
+                KeyboardShortcut.ClipboardDefault,
+                KeyboardShortcut.VirtualWindowDefault).Validate());
     }
 
     [Fact]
@@ -97,6 +106,37 @@ public sealed class ShortcutSettingsTests
             Assert.Equal(0x53u, loaded.Capture.VirtualKey);
             Assert.Equal(0x4Cu, loaded.Gallery.VirtualKey);
             Assert.Equal(KeyboardShortcut.ClipboardDefault, loaded.Clipboard);
+            Assert.Equal(KeyboardShortcut.VirtualWindowDefault, loaded.VirtualWindow);
+            Assert.False(loaded.Automatic4KCapture);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LegacyThreeShortcutFileAddsVirtualWindowDefault()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "Index.Tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "settings.json");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(path, """
+                {
+                  "capture": { "virtualKey": 83, "modifiers": 6 },
+                  "gallery": { "virtualKey": 76, "modifiers": 6 },
+                  "clipboard": { "virtualKey": 86, "modifiers": 10 }
+                }
+                """);
+
+            var loaded = new ShortcutSettingsStore(path).Current;
+
+            Assert.Equal(0x53u, loaded.Capture.VirtualKey);
+            Assert.Equal(0x4Cu, loaded.Gallery.VirtualKey);
+            Assert.Equal(0x56u, loaded.Clipboard.VirtualKey);
+            Assert.Equal(KeyboardShortcut.VirtualWindowDefault, loaded.VirtualWindow);
         }
         finally
         {

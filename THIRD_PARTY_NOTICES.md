@@ -50,6 +50,19 @@
 - 上游：[microsoft/Win2D](https://github.com/microsoft/Win2D)，
   [LICENSE](https://github.com/microsoft/Win2D/blob/main/LICENSE.txt)。
 
+## Virtual Display Driver
+
+- 用途：Windows 高分辨率截图所需的可选虚拟显示器驱动源码；当前仅作为固定源码依赖，
+  尚未由 Index 构建、安装或随发布包分发。
+- 当前锁定提交：`d7244969b2aa8bb38e76d79505eda217996cefea`
+  （见 `third_party/virtual-display-driver` submodule）。
+- 许可证：MIT，Copyright © 2024 Virtual Display。
+- 上游：[VirtualDrivers/Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)；
+  [本地 LICENSE](third_party/virtual-display-driver/LICENSE)。
+- 其嵌套的 Microsoft Windows Driver Frameworks 源码锁定于
+  `3b9780e847cf68d6199dafe0f87650cf1f9c227f`；构建或分发驱动前须继续保留该依赖自身的
+  版权与许可证声明。
+
 ## Ketcher
 
 - 用途：Windows 端 WebView2 内的离线二维分子结构绘图与编辑。

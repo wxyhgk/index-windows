@@ -26,16 +26,25 @@ public static class BuiltinToolbarControls
     /// <summary>
     /// 骨架阶段只登记已经接通的动作。标注、历史与更多动作后续各自注册，宿主不变。
     /// </summary>
-    public static void RegisterCaptureDefaults(ToolbarRegistry registry)
+    public static void RegisterCaptureDefaults(
+        ToolbarRegistry registry)
     {
         registry.Register(new CommandToolbarControl(
             ToolbarCommandIds.Pin, "📌", "钉图", ToolbarGroup.Actions, 0, false, ToolbarScope.Capture));
         registry.Register(new CommandToolbarControl(
             ToolbarCommandIds.Copy, "⧉", "复制", ToolbarGroup.Actions, 1, false, ToolbarScope.Capture));
         registry.Register(new CommandToolbarControl(
-            ToolbarCommandIds.Complete, "✓", "完成", ToolbarGroup.Actions, 2, false, ToolbarScope.Capture));
+            ToolbarCommandIds.HighResolution4K,
+            "4K",
+            "直接保存 4K 高 DPI 截图",
+            ToolbarGroup.Actions,
+            2,
+            false,
+            ToolbarScope.Capture));
         registry.Register(new CommandToolbarControl(
-            ToolbarCommandIds.Cancel, "×", "取消", ToolbarGroup.Actions, 3, false, ToolbarScope.Capture));
+            ToolbarCommandIds.Complete, "✓", "完成", ToolbarGroup.Actions, 3, false, ToolbarScope.Capture));
+        registry.Register(new CommandToolbarControl(
+            ToolbarCommandIds.Cancel, "×", "取消", ToolbarGroup.Actions, 4, false, ToolbarScope.Capture));
     }
 
     public static void RegisterPinnedDefaults(ToolbarRegistry registry)

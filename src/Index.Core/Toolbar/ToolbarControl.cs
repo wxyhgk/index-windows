@@ -26,19 +26,22 @@ public sealed class ToolbarContext
     public Action<string> Perform { get; }
     public ToolbarHostCapabilities Capabilities { get; }
     public Func<string, bool> IsActionExecuting { get; }
+    public Func<string, bool> IsActionEnabled { get; }
 
     public ToolbarContext(
         AnnotationState annotation,
         ToolbarScope scope,
         Action<string> perform,
         ToolbarHostCapabilities? capabilities = null,
-        Func<string, bool>? isActionExecuting = null)
+        Func<string, bool>? isActionExecuting = null,
+        Func<string, bool>? isActionEnabled = null)
     {
         Annotation = annotation;
         Scope = scope;
         Perform = perform;
         Capabilities = capabilities ?? ToolbarHostCapabilities.None;
         IsActionExecuting = isActionExecuting ?? (_ => false);
+        IsActionEnabled = isActionEnabled ?? (_ => true);
     }
 }
 
@@ -112,7 +115,8 @@ public sealed class CommandToolbarControl : ToolbarControlBase
         _scopes = scopes.ToHashSet();
     }
 
-    public override bool IsEnabled(ToolbarContext context) => !context.IsActionExecuting(Id);
+    public override bool IsEnabled(ToolbarContext context) =>
+        context.IsActionEnabled(Id) && !context.IsActionExecuting(Id);
     public override bool IsBusy(ToolbarContext context) => context.IsActionExecuting(Id);
     public override void Activate(ToolbarContext context) => context.Perform(Id);
 }
@@ -125,4 +129,5 @@ public static class ToolbarCommandIds
     public const string Copy = "copy";
     public const string Close = "close";
     public const string Cancel = "action.cancel";
+    public const string HighResolution4K = "capture.4k";
 }

@@ -18,7 +18,10 @@ public sealed record CaptureSelection
 }
 
 /// <summary>The user's requested action and the immutable selection it should consume.</summary>
-public sealed record CaptureDecision(string ActionId, CaptureSelection Selection);
+public sealed record CaptureDecision(
+    string ActionId,
+    CaptureSelection Selection,
+    nint TargetWindowHandle = default);
 
 /// <summary>
 /// Immutable reference to one member of a frozen display batch. DisplayId is the stable key;

@@ -35,6 +35,7 @@ public static class Program
     private static RecognitionPluginRegistry? _recognitionPlugins;
     private static LocalRecognitionHost? _recognitionHost;
     private static SystemTrayIcon? _trayIcon;
+    private static Task? _virtualWindowCaptureTask;
 
     [STAThread]
     private static void Main(string[] args)
@@ -69,20 +70,44 @@ public static class Program
                 actionRegistry.Register(new SaveAction(new WindowsImageExporter()));
                 actionRegistry.Register(new CloseCaptureAction());
                 actionRegistry.Register(new PinAction(_pinWindows));
-                var screenFreezer = new ScreenFreezer();
+                var graphicsCapture = new WindowsGraphicsCaptureInterop();
+                var displayCatalog = new WindowsDisplayCatalog();
+                var screenFreezer = new ScreenFreezer(graphicsCapture, displayCatalog);
+                var virtualDisplayController = new MttVirtualDisplayController(displayCatalog);
+                var imagePreparer = new WindowsCaptureImagePreparer();
                 var capturePersistence = new CapturePersistenceService(
                     _shotStore,
                     sourceResolver,
                     new WindowsBrowserSourceMetadataResolver());
+                var virtualDisplayCapture = new VirtualDisplayCaptureWorkflow(
+                    new MttVirtualDisplayCaptureSource(
+                        displayCatalog,
+                        graphicsCapture,
+                        virtualDisplayController),
+                    sourceResolver,
+                    imagePreparer,
+                    capturePersistence);
+                var virtualWindowFrameSource = new MttVirtualWindowCaptureSource(
+                    displayCatalog,
+                    graphicsCapture,
+                    virtualDisplayController,
+                    new WindowsWindow4KStager());
+                var virtualWindowCapture = new VirtualWindowCaptureWorkflow(
+                    virtualWindowFrameSource,
+                    sourceResolver,
+                    imagePreparer,
+                    capturePersistence);
                 _coordinator = new CaptureCoordinator(
                     screenFreezer,
                     screenFreezer,
                     new CaptureActionExecutor(actionRegistry),
                     sourceResolver,
-                    new WindowsGraphicsCaptureInterop(),
-                    new WindowsCaptureImagePreparer(),
+                    graphicsCapture,
+                    virtualWindowFrameSource,
+                    imagePreparer,
                     capturePersistence,
-                    new CaptureActionContextFactory());
+                    new CaptureActionContextFactory(),
+                    _shortcutSettings);
                 _coordinator.InitOnUiThread();
                 var shotAssetReader = new WindowsShotAssetReader(_shotStore);
                 _recognitionHost = new LocalRecognitionHost();
@@ -96,6 +121,7 @@ public static class Program
                     _shotStore,
                     _libraryOrganization,
                     _shortcutSettings,
+                    virtualDisplayCapture,
                     _clipboardStore,
                     clipboardHistoryWriter,
                     shotAssetReader,
@@ -104,7 +130,16 @@ public static class Program
                 InitializeTrayIcon(_mainWindow);
                 _shortcutController = new GlobalShortcutController(
                     _shortcutSettings,
-                    () => _ = _coordinator.BeginCaptureAsync("hotkey"),
+                    () =>
+                    {
+                        if (!_mainWindow.DispatcherQueue.TryEnqueue(
+                                () => _ = _coordinator.BeginCaptureAsync("hotkey")))
+                        {
+                            LogStartupFailure(new InvalidOperationException(
+                                "Could not dispatch the capture hotkey to the UI thread."));
+                        }
+                    },
+                    () => StartVirtualWindowCapture(virtualWindowCapture),
                     () => _mainWindow.DispatcherQueue.TryEnqueue(_mainWindow.ShowLibraryPage),
                     () => _mainWindow.DispatcherQueue.TryEnqueue(_clipboardPopup.Toggle));
                 _shortcutController.Start();
@@ -139,6 +174,35 @@ public static class Program
         }
         catch
         {
+        }
+    }
+
+    private static void StartVirtualWindowCapture(VirtualWindowCaptureWorkflow workflow)
+    {
+        // CaptureForegroundAndSaveAsync freezes the foreground HWND synchronously before its first
+        // await. Keep this callback on the hotkey thread so Index never becomes the capture target.
+        var capture = workflow.CaptureForegroundAndSaveAsync();
+        _virtualWindowCaptureTask = ObserveVirtualWindowCaptureAsync(capture);
+    }
+
+    private static async Task ObserveVirtualWindowCaptureAsync(
+        Task<VirtualDisplayCaptureOutcome> capture)
+    {
+        try
+        {
+            var outcome = await capture.ConfigureAwait(false);
+            Directory.CreateDirectory(@"C:\temp");
+            await File.AppendAllTextAsync(
+                @"C:\temp\index_capture.log",
+                $"[{DateTime.Now:O}] 4K current window: {outcome.Kind}; " +
+                $"{outcome.Width}x{outcome.Height}; {outcome.Message}{Environment.NewLine}")
+                .ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            LogStartupFailure(new InvalidOperationException(
+                "The 4K current-window hotkey failed unexpectedly.",
+                error));
         }
     }
 

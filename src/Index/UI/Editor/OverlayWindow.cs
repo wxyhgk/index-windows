@@ -33,6 +33,7 @@ public sealed class OverlayWindow : Window
     private SelectionController? _selectionController;
     private WindowTargetNavigator? _windowTargetNavigator;
     private WindowSelectionTarget? _pressedWindowTarget;
+    private WindowSelectionTarget? _selectionCaptureTarget;
     private Point _lastPointerPosition;
     private bool _isConfirmed;
     private bool _hasClosed;
@@ -94,7 +95,8 @@ public sealed class OverlayWindow : Window
         _toolbarContext = new ToolbarContext(
             _annotation,
             ToolbarScope.Capture,
-            PerformToolbarCommand);
+            PerformToolbarCommand,
+            isActionEnabled: IsToolbarCommandEnabled);
 
         var visuals = new OverlayVisualTree(_annotation);
         _rootGrid = visuals.Root;
@@ -159,6 +161,7 @@ public sealed class OverlayWindow : Window
             pixelEdgeDetector,
             _snapshotIdentity.Value);
         _pressedWindowTarget = null;
+        _selectionCaptureTarget = null;
         _pixelEdgeDetectionRequested = false;
         _lastPointerPosition = default;
         _selection = default;
@@ -169,13 +172,18 @@ public sealed class OverlayWindow : Window
         Activate();
 
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        var hostBounds = new SourceWindowBounds(
+            snapshot.Left,
+            snapshot.Top,
+            checked(snapshot.Left + snapshot.Width),
+            checked(snapshot.Top + snapshot.Height));
         var hostResult = OverlayWindowHost.Apply(
             hwnd,
             new OverlayPhysicalBounds(
-                snapshot.Left,
-                snapshot.Top,
-                snapshot.Width,
-                snapshot.Height));
+                hostBounds.Left,
+                hostBounds.Top,
+                hostBounds.Width,
+                hostBounds.Height));
         var actual = hostResult.ActualBounds;
         System.IO.File.AppendAllText(@"C:\temp\index_capture.log",
             $"[overlay] Show: display=({snapshot.Left},{snapshot.Top},{snapshot.Width}x{snapshot.Height}) " +
@@ -228,11 +236,14 @@ public sealed class OverlayWindow : Window
 
             _isConfirmed = false;
             controller.SetSelection(null);
+            _selectionCaptureTarget = null;
             SyncSelectionFromController();
             HideEditUI();
         }
 
-        _pressedWindowTarget = _windowTargetNavigator?.CurrentTarget is { } hovered
+        _selectionCaptureTarget = null;
+        _pressedWindowTarget = _windowTargetNavigator is { IsCurrentTargetExplicit: true }
+            && _windowTargetNavigator.CurrentTarget is { } hovered
             && WindowTargetNavigator.Contains(hovered, ToSelectionPoint(pos))
             ? hovered
             : _windowTargetNavigator?.FindPrimary(ToSelectionPoint(pos), Coordinates);
@@ -283,6 +294,9 @@ public sealed class OverlayWindow : Window
         {
             if (committed)
             {
+                // A drag creates a free-form region. The window under the initial press is not an
+                // explicit target; resolve the completed selection instead.
+                _selectionCaptureTarget = null;
                 _pressedWindowTarget = null;
                 EnterConfirmedState();
             }
@@ -290,12 +304,14 @@ public sealed class OverlayWindow : Window
             {
                 controller.SetSelection(target.Bounds);
                 SyncSelectionFromController();
+                _selectionCaptureTarget = target;
                 _pressedWindowTarget = null;
                 EnterConfirmedState();
             }
             else
             {
                 _pressedWindowTarget = null;
+                _selectionCaptureTarget = null;
                 _isConfirmed = false;
                 _selectionBorder.Visibility = Visibility.Collapsed;
                 _sizeLabel.Visibility = Visibility.Collapsed;
@@ -407,6 +423,7 @@ public sealed class OverlayWindow : Window
         SyncSelectionFromController();
         _isConfirmed = false;
         _windowTargetNavigator?.Reset();
+        _selectionCaptureTarget = null;
         HideEditUI();
         _initialFrame.Visibility = Visibility.Collapsed;
         _selectionBorder.Visibility = Visibility.Collapsed;
@@ -439,7 +456,8 @@ public sealed class OverlayWindow : Window
                     new LRect(0, 0, _selection.Width, _selection.Height),
                     coordinates.ScaleX,
                     coordinates.ScaleY)
-            });
+            },
+            FindTargetWindowHandle());
 
         // Release the full-screen overlay before any potentially expensive action runs.
         var handler = CaptureRequested;
@@ -484,13 +502,18 @@ public sealed class OverlayWindow : Window
             var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
             if (!OverlayWindowHost.IsWindowUsable(hwnd)) return false;
             Activate();
+            var hostBounds = new SourceWindowBounds(
+                snapshot.Left,
+                snapshot.Top,
+                checked(snapshot.Left + snapshot.Width),
+                checked(snapshot.Top + snapshot.Height));
             var result = OverlayWindowHost.Apply(
                 hwnd,
                 new OverlayPhysicalBounds(
-                    snapshot.Left,
-                    snapshot.Top,
-                    snapshot.Width,
-                    snapshot.Height));
+                    hostBounds.Left,
+                    hostBounds.Top,
+                    hostBounds.Width,
+                    hostBounds.Height));
             Activate();
             return result.Succeeded && OverlayWindowHost.IsWindowShown(hwnd);
         }
@@ -507,6 +530,7 @@ public sealed class OverlayWindow : Window
             case ToolbarCommandIds.Pin:
             case ToolbarCommandIds.Copy:
             case ToolbarCommandIds.Complete:
+            case ToolbarCommandIds.HighResolution4K:
                 ConfirmSelection(commandID);
                 break;
             case ToolbarCommandIds.Cancel:
@@ -539,6 +563,24 @@ public sealed class OverlayWindow : Window
         UpdateHandles();
         UpdateSizeLabel();
         UpdateToolbarPosition();
+    }
+
+    private bool IsToolbarCommandEnabled(string commandId) =>
+        commandId != ToolbarCommandIds.HighResolution4K
+        || FindTargetWindowHandle() != nint.Zero;
+
+    private nint FindTargetWindowHandle()
+    {
+        if (_selection.IsEmpty || _windowTargetNavigator is null)
+            return nint.Zero;
+        return _windowTargetNavigator.ResolveCaptureHandle(
+            _selectionCaptureTarget,
+            new SelectionRect(
+                _selection.X,
+                _selection.Y,
+                _selection.Width,
+                _selection.Height),
+            Coordinates);
     }
 
     private void ApplySelectionBorderStyle(bool isWindowPreview)

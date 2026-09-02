@@ -15,8 +15,18 @@ public interface IWindowSurfaceCapture
         CancellationToken cancellationToken = default);
 }
 
-/// <summary>Captures one compositor-backed HWND as a PNG without routing through the desktop.</summary>
-public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture
+public interface IDisplaySurfaceCapture
+{
+    Task<byte[]?> TryCaptureMonitorPngAsync(
+        nint monitor,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Captures compositor-backed windows and displays as PNG frames through Windows Graphics Capture.
+/// </summary>
+public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture, IDisplaySurfaceCapture
 {
     private const string CaptureLogPath = @"C:\temp\index_capture.log";
     private static readonly Guid GraphicsCaptureItemGuid =
@@ -27,15 +37,43 @@ public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
-        if (window == 0 || !GraphicsCaptureSession.IsSupported())
+        return await TryCaptureTargetPngAsync(
+            window,
+            "hwnd",
+            CreateItemForWindow,
+            timeout,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<byte[]?> TryCaptureMonitorPngAsync(
+        nint monitor,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryCaptureTargetPngAsync(
+            monitor,
+            "monitor",
+            CreateItemForMonitor,
+            timeout,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]?> TryCaptureTargetPngAsync(
+        nint target,
+        string targetKind,
+        Func<nint, GraphicsCaptureItem?> createItem,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (target == 0 || !GraphicsCaptureSession.IsSupported())
             return null;
 
         try
         {
-            var item = CreateItemForWindow(window);
+            var item = createItem(target);
             if (item is null || item.Size.Width <= 0 || item.Size.Height <= 0)
                 return null;
-            Log($"item created: hwnd=0x{window:X}, size={item.Size.Width}x{item.Size.Height}");
+            Log($"item created: {targetKind}=0x{target:X}, size={item.Size.Width}x{item.Size.Height}");
 
             using var canvasDevice = new CanvasDevice();
             using var framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
@@ -44,73 +82,84 @@ public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture
                 1,
                 item.Size);
             using var session = framePool.CreateCaptureSession(item);
-            var completion = new TaskCompletionSource<byte[]?>(
+            var frameReady = new TaskCompletionSource<Direct3D11CaptureFrame>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
 
             void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
             {
                 try
                 {
-                    using var frame = sender.TryGetNextFrame();
-                    if (frame is null) return;
-                    sender.FrameArrived -= OnFrameArrived;
-                    _ = EncodeFrameAsync(canvasDevice, frame.Surface, completion);
+                    var frame = sender.TryGetNextFrame();
+                    if (frame is null)
+                        return;
+                    if (!frameReady.TrySetResult(frame))
+                        frame.Dispose();
                 }
                 catch (Exception error)
                 {
-                    completion.TrySetException(error);
+                    frameReady.TrySetException(error);
                 }
             }
 
             framePool.FrameArrived += OnFrameArrived;
             session.StartCapture();
+            Direct3D11CaptureFrame frame;
             try
             {
-                var png = await completion.Task.WaitAsync(timeout, cancellationToken)
+                frame = await frameReady.Task.WaitAsync(timeout, cancellationToken)
                     .ConfigureAwait(false);
-                Log($"frame encoded: hwnd=0x{window:X}, bytes={png?.Length ?? 0}");
-                return png;
             }
             finally
             {
                 framePool.FrameArrived -= OnFrameArrived;
             }
+
+            using (frame)
+            using (var bitmap = CanvasBitmap.CreateFromDirect3D11Surface(
+                canvasDevice,
+                frame.Surface))
+            {
+                using var stream = new InMemoryRandomAccessStream();
+                await bitmap.SaveAsync(stream, CanvasBitmapFileFormat.Png);
+                stream.Seek(0);
+                var bytes = new byte[stream.Size];
+                using var reader = new DataReader(stream.GetInputStreamAt(0));
+                await reader.LoadAsync((uint)stream.Size);
+                reader.ReadBytes(bytes);
+                Log($"frame encoded: {targetKind}=0x{target:X}, bytes={bytes.Length}");
+                return bytes;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log($"capture canceled: {targetKind}=0x{target:X}");
+            throw;
         }
         catch (Exception error)
         {
-            Log($"capture failed: hwnd=0x{window:X}, {error.GetType().Name}: {error.Message}");
+            Log($"capture failed: {targetKind}=0x{target:X}, " +
+                $"{error.GetType().Name}: {error.Message}");
             return null;
         }
     }
 
-    private static async Task EncodeFrameAsync(
-        CanvasDevice canvasDevice,
-        Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface surface,
-        TaskCompletionSource<byte[]?> completion)
-    {
-        try
-        {
-            using var bitmap = CanvasBitmap.CreateFromDirect3D11Surface(canvasDevice, surface);
-            using var stream = new InMemoryRandomAccessStream();
-            await bitmap.SaveAsync(stream, CanvasBitmapFileFormat.Png);
-            stream.Seek(0);
-            var bytes = new byte[stream.Size];
-            using var reader = new DataReader(stream.GetInputStreamAt(0));
-            await reader.LoadAsync((uint)stream.Size);
-            reader.ReadBytes(bytes);
-            completion.TrySetResult(bytes);
-        }
-        catch (Exception error)
-        {
-            completion.TrySetException(error);
-        }
-    }
-
     private static GraphicsCaptureItem? CreateItemForWindow(nint window)
+        => CreateItem(window, static (interop, target, iid) =>
+            interop.CreateForWindow(target, iid));
+
+    private static GraphicsCaptureItem? CreateItemForMonitor(nint monitor)
+        => CreateItem(monitor, static (interop, target, iid) =>
+            interop.CreateForMonitor(target, iid));
+
+    private static GraphicsCaptureItem? CreateItem(
+        nint target,
+        Func<IGraphicsCaptureItemInterop, nint, Guid, nint> create)
     {
         var factory = ActivationFactory.Get("Windows.Graphics.Capture.GraphicsCaptureItem");
         var interop = (IGraphicsCaptureItemInterop)Marshal.GetObjectForIUnknown(factory.ThisPtr);
-        var itemPointer = interop.CreateForWindow(window, GraphicsCaptureItemGuid);
+        var itemPointer = create(interop, target, GraphicsCaptureItemGuid);
+        if (itemPointer == 0)
+            return null;
         try
         {
             return MarshalInterface<GraphicsCaptureItem>.FromAbi(itemPointer);

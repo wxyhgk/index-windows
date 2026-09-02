@@ -1,0 +1,103 @@
+using Index.Platform;
+using Index.Storage;
+using Index.UI.Gallery;
+using Microsoft.UI.Xaml;
+
+namespace Index.UI;
+
+public sealed partial class MainWindow
+{
+    private void OnCaptureSaved(StoredCapture capture)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_navigation.IsLibraryShots)
+                return;
+            if (_previewView is not null
+                && _contentHost.IsOverlayVisible(_previewView))
+            {
+                _galleryRefreshPending = true;
+                return;
+            }
+            var generation = _navigation.Refresh();
+            _ = LoadShotGalleryAsync(generation);
+        });
+    }
+
+    private void OnClosed(object sender, WindowEventArgs args)
+    {
+        CancelTrayMemoryTrim();
+        ClosePreview();
+        CloseSearch();
+        DisposeActiveGallery();
+        _previewView?.Dispose();
+        _previewView = null;
+        _shotStore.CaptureSaved -= OnCaptureSaved;
+        AppWindow.Closing -= OnAppWindowClosing;
+        Closed -= OnClosed;
+    }
+
+    private void OnAppWindowClosing(
+        Microsoft.UI.Windowing.AppWindow sender,
+        Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
+    {
+        if (!_closeToTrayEnabled || _exitRequested)
+            return;
+
+        args.Cancel = true;
+        sender.Hide();
+        _activeGallery?.SetBackgrounded(true);
+        ScheduleTrayMemoryTrim();
+    }
+
+    public void EnableCloseToTray() => _closeToTrayEnabled = true;
+
+    public void ShowFromTray()
+    {
+        CancelTrayMemoryTrim();
+        _activeGallery?.SetBackgrounded(false);
+        AppWindow.Show();
+        Activate();
+    }
+
+    private void ScheduleTrayMemoryTrim()
+    {
+        CancelTrayMemoryTrim();
+        var cancellation = new CancellationTokenSource();
+        _trayTrimCancellation = cancellation;
+        _ = TrimTrayMemoryAsync(cancellation);
+    }
+
+    private async Task TrimTrayMemoryAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellation.Token)
+                .ConfigureAwait(false);
+            ThumbnailLoader.Shared.Clear();
+            WebsiteFaviconProvider.Shared.Clear();
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_trayTrimCancellation, cancellation))
+                _trayTrimCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelTrayMemoryTrim()
+    {
+        var cancellation = _trayTrimCancellation;
+        _trayTrimCancellation = null;
+        cancellation?.Cancel();
+    }
+
+    public void ExitApplication()
+    {
+        _exitRequested = true;
+        Close();
+    }
+}

@@ -25,6 +25,7 @@ public sealed class WindowTargetNavigator
     }
 
     public WindowSelectionTarget? CurrentTarget { get; private set; }
+    public bool IsCurrentTargetExplicit { get; private set; }
     public int CandidateCount => _candidates.Count;
 
     /// <summary>
@@ -46,6 +47,7 @@ public sealed class WindowTargetNavigator
         {
             _candidates = candidates;
             _candidateIndex = 0;
+            IsCurrentTargetExplicit = false;
         }
 
         _candidateIndex = _candidates.Count > 0
@@ -62,6 +64,26 @@ public sealed class WindowTargetNavigator
 
     public bool HasTargetAt(SelectionPoint point, CaptureCoordinateMapper coordinates) =>
         FindCandidates(point, coordinates).Count > 0;
+
+    /// <summary>
+    /// Keeps the window explicitly chosen during hover/cycling. Only a free-form selection with
+    /// no chosen target falls back to center hit testing.
+    /// </summary>
+    public nint ResolveCaptureHandle(
+        WindowSelectionTarget? selectedTarget,
+        SelectionRect selection,
+        CaptureCoordinateMapper coordinates)
+    {
+        if (selectedTarget is not null)
+            return selectedTarget.CaptureHandle;
+        if (selection.Width <= 0 || selection.Height <= 0)
+            return nint.Zero;
+
+        var center = new SelectionPoint(
+            selection.X + selection.Width / 2,
+            selection.Y + selection.Height / 2);
+        return FindPrimary(center, coordinates)?.CaptureHandle ?? nint.Zero;
+    }
 
     public bool TryCycle(
         SelectionPoint point,
@@ -85,6 +107,7 @@ public sealed class WindowTargetNavigator
         int step = direction < 0 ? -1 : 1;
         _candidateIndex = (_candidateIndex + step + _candidates.Count) % _candidates.Count;
         CurrentTarget = _candidates[_candidateIndex];
+        IsCurrentTargetExplicit = true;
         target = CurrentTarget;
         return true;
     }
@@ -94,6 +117,7 @@ public sealed class WindowTargetNavigator
         _candidates = Array.Empty<WindowSelectionTarget>();
         _candidateIndex = 0;
         CurrentTarget = null;
+        IsCurrentTargetExplicit = false;
     }
 
     public static bool Contains(WindowSelectionTarget target, SelectionPoint point) =>

@@ -76,6 +76,8 @@ public sealed class ShortcutSettingsStore : IShortcutSettingsStore
             var settings = JsonSerializer.Deserialize<ShortcutSettings>(File.ReadAllText(path), JsonOptions);
             if (settings is not null && !settings.Clipboard.IsValid)
                 settings = settings with { Clipboard = KeyboardShortcut.ClipboardDefault };
+            if (settings is not null && !settings.VirtualWindow.IsValid)
+                settings = settings with { VirtualWindow = KeyboardShortcut.VirtualWindowDefault };
             settings?.Validate();
             return settings ?? ShortcutSettings.Defaults;
         }

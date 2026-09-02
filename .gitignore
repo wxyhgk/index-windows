@@ -22,6 +22,7 @@ __pycache__/
 
 # Windows publish and installer outputs
 artifacts/
+installer/no-temp/app/
 
 # Ketcher build workspace (temporary, used to produce ketcher-bundle.js)
 ketcher-build/

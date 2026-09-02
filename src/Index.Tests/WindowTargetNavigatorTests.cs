@@ -19,11 +19,14 @@ public sealed class WindowTargetNavigatorTests
         var point = new SelectionPoint(50, 50);
 
         Assert.Equal(topLevel, navigator.PreviewAt(point, Coordinates));
+        Assert.False(navigator.IsCurrentTargetExplicit);
         Assert.Equal(2, navigator.CandidateCount);
         Assert.True(navigator.TryCycle(point, 1, Coordinates, out var next));
         Assert.Equal(child, next);
+        Assert.True(navigator.IsCurrentTargetExplicit);
         Assert.True(navigator.TryCycle(point, -1, Coordinates, out var previous));
         Assert.Equal(topLevel, previous);
+        Assert.True(navigator.IsCurrentTargetExplicit);
     }
 
     [Fact]
@@ -35,10 +38,33 @@ public sealed class WindowTargetNavigatorTests
 
         Assert.Equal(first, navigator.PreviewAt(new SelectionPoint(50, 50), Coordinates));
         Assert.Equal(second, navigator.PreviewAt(new SelectionPoint(250, 50), Coordinates));
+        Assert.False(navigator.IsCurrentTargetExplicit);
 
         navigator.Reset();
         Assert.Null(navigator.CurrentTarget);
+        Assert.False(navigator.IsCurrentTargetExplicit);
         Assert.Equal(0, navigator.CandidateCount);
+    }
+
+    [Fact]
+    public void ExplicitCyclePersistsOnlyWhileTheCandidateSetIsUnchanged()
+    {
+        var child = Target(2, new SelectionRect(20, 20, 100, 100), depth: 1);
+        var topLevel = Target(1, new SelectionRect(0, 0, 200, 200));
+        var navigator = new WindowTargetNavigator([child, topLevel], null, Display);
+
+        Assert.Equal(topLevel, navigator.PreviewAt(new SelectionPoint(50, 50), Coordinates));
+        Assert.True(navigator.TryCycle(
+            new SelectionPoint(50, 50),
+            1,
+            Coordinates,
+            out var selectedChild));
+        Assert.Equal(child, selectedChild);
+        Assert.Equal(child, navigator.PreviewAt(new SelectionPoint(80, 80), Coordinates));
+        Assert.True(navigator.IsCurrentTargetExplicit);
+
+        Assert.Equal(topLevel, navigator.PreviewAt(new SelectionPoint(150, 150), Coordinates));
+        Assert.False(navigator.IsCurrentTargetExplicit);
     }
 
     [Fact]
@@ -83,10 +109,60 @@ public sealed class WindowTargetNavigatorTests
             new FrozenPixelEdgeOptions { MinimumWidth = 10, MinimumHeight = 10 }));
 
         Assert.Null(navigator.CurrentTarget);
+        Assert.False(navigator.IsCurrentTargetExplicit);
         Assert.Equal(regular, navigator.PreviewAt(point, coordinates));
         Assert.Equal(2, navigator.CandidateCount);
     }
 
-    private static WindowSelectionTarget Target(nint handle, SelectionRect bounds, int depth = 0) =>
-        new(handle, new SourceWindowBounds(0, 0, 100, 100), bounds, depth);
+    [Fact]
+    public void ExplicitWindowTargetStaysBoundWhenSelectionCenterOverlapsAnotherWindow()
+    {
+        var selected = Target(10, new SelectionRect(0, 0, 300, 300));
+        var other = Target(20, new SelectionRect(100, 100, 300, 300));
+        var navigator = new WindowTargetNavigator([other, selected], null, Display);
+        var selection = new SelectionRect(150, 150, 100, 100);
+
+        Assert.Equal((nint)10, navigator.ResolveCaptureHandle(selected, selection, Coordinates));
+        Assert.Equal((nint)20, navigator.ResolveCaptureHandle(null, selection, Coordinates));
+    }
+
+    [Fact]
+    public void NestedTargetResolvesToItsFrozenRootHandle()
+    {
+        var child = Target(
+            12,
+            new SelectionRect(20, 20, 100, 100),
+            depth: 2,
+            rootHandle: 10);
+        var navigator = new WindowTargetNavigator([child], null, Display);
+
+        Assert.Equal(
+            (nint)10,
+            navigator.ResolveCaptureHandle(
+                child,
+                new SelectionRect(20, 20, 100, 100),
+                Coordinates));
+    }
+
+    [Fact]
+    public void ExplicitPixelRegionDoesNotBecomeAWindowCapture()
+    {
+        var window = Target(10, new SelectionRect(0, 0, 300, 300));
+        var pixel = Target(0, new SelectionRect(20, 20, 100, 100), depth: int.MaxValue);
+        var navigator = new WindowTargetNavigator([window], null, Display);
+
+        Assert.Equal(
+            nint.Zero,
+            navigator.ResolveCaptureHandle(
+                pixel,
+                pixel.Bounds,
+                Coordinates));
+    }
+
+    private static WindowSelectionTarget Target(
+        nint handle,
+        SelectionRect bounds,
+        int depth = 0,
+        nint rootHandle = default) =>
+        new(handle, new SourceWindowBounds(0, 0, 100, 100), bounds, depth, rootHandle);
 }

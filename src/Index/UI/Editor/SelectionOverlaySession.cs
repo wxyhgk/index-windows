@@ -43,8 +43,7 @@ public sealed class SelectionOverlaySession : IDisposable
             window.CloseOnCapture = false;
             var targets = WindowSelectionTargetMapper.Create(
                 snapshot,
-                windows,
-                checked((uint)Environment.ProcessId));
+                windows);
             var entry = new Entry(snapshot, targets, window);
             window.InteractionActivated += OnInteractionActivated;
             window.PixelEdgeDetectionRequested += OnPixelEdgeDetectionRequested;
@@ -92,9 +91,7 @@ public sealed class SelectionOverlaySession : IDisposable
         try
         {
             foreach (var entry in _entries)
-                entry.Window.Show(
-                    entry.Snapshot,
-                    entry.WindowTargets);
+                entry.Window.Show(entry.Snapshot, entry.WindowTargets);
 
             var preferred = PreferredEntryAtCursor() ?? _entries.FirstOrDefault();
             preferred?.Window.Activate();
@@ -119,7 +116,8 @@ public sealed class SelectionOverlaySession : IDisposable
     {
         if (!IsActive || _entries.Count == 0) return false;
         var preferred = PreferredEntryAtCursor();
-        if (preferred is not null && preferred.Window.TryReactivate(preferred.Snapshot))
+        if (preferred is not null
+            && preferred.Window.TryReactivate(preferred.Snapshot))
             return true;
         foreach (var entry in _entries)
         {
@@ -194,10 +192,17 @@ public sealed class SelectionOverlaySession : IDisposable
     {
         if (!NativeMethods.GetCursorPos(out var cursor)) return null;
         return _entries.FirstOrDefault(entry =>
-            cursor.X >= entry.Snapshot.Left
-            && cursor.X < entry.Snapshot.Left + entry.Snapshot.Width
-            && cursor.Y >= entry.Snapshot.Top
-            && cursor.Y < entry.Snapshot.Top + entry.Snapshot.Height);
+        {
+            var bounds = new SourceWindowBounds(
+                entry.Snapshot.Left,
+                entry.Snapshot.Top,
+                entry.Snapshot.Left + entry.Snapshot.Width,
+                entry.Snapshot.Top + entry.Snapshot.Height);
+            return cursor.X >= bounds.Left
+                && cursor.X < bounds.Right
+                && cursor.Y >= bounds.Top
+                && cursor.Y < bounds.Bottom;
+        });
     }
 
     [StructLayout(LayoutKind.Sequential)]

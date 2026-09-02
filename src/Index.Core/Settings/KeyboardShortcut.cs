@@ -14,6 +14,7 @@ public enum HotKeyModifiers : uint
 public readonly record struct KeyboardShortcut(uint VirtualKey, HotKeyModifiers Modifiers)
 {
     public static KeyboardShortcut CaptureDefault => new(0x41, HotKeyModifiers.Control | HotKeyModifiers.Shift);
+    public static KeyboardShortcut VirtualWindowDefault => new(0x34, HotKeyModifiers.Control | HotKeyModifiers.Shift);
     public static KeyboardShortcut GalleryDefault => new(0x47, HotKeyModifiers.Control | HotKeyModifiers.Shift);
     public static KeyboardShortcut ClipboardDefault => new(0x56, HotKeyModifiers.Control | HotKeyModifiers.Shift);
 

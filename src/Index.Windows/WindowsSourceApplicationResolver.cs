@@ -35,7 +35,7 @@ public sealed class WindowsSourceApplicationResolver : ISourceApplicationResolve
                 Normalize(GetWindowTitle(foregroundWindow)));
         }
 
-        return new SourceApplicationSnapshot(foreground, windows);
+        return new SourceApplicationSnapshot(foreground, windows, foregroundWindow);
     }
 
     public SourceApplicationInfo? Resolve(
@@ -134,8 +134,8 @@ public sealed class WindowsSourceApplicationResolver : ISourceApplicationResolve
                     if (TryGetClippedChildBounds(child, rootBounds, out var childBounds))
                     {
                         // Attribute hosted/cross-process child HWNDs to their owning top-level app.
-                        // Otherwise WebView/render helpers could bypass Index's own-process filter
-                        // or be persisted as the screenshot source instead of the visible app.
+                        // Otherwise WebView/render helpers could be persisted as the screenshot
+                        // source instead of the visible application that owns the frame.
                         var identity = new WindowCandidateIdentity(rootProcessId, childBounds);
                         if (seenBounds.Add(identity))
                         {
