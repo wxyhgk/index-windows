@@ -1,4 +1,5 @@
 using Index.Clipboard;
+using Index.Platform.Diagnostics;
 
 namespace Index.App;
 
@@ -9,6 +10,7 @@ public sealed class ClipboardHistoryCoordinator : IDisposable
     private readonly IClipboardSnapshotReader _reader;
     private readonly IClipboardHistoryStore _store;
     private readonly ClipboardReplaySuppression? _replaySuppression;
+    private readonly IAppDiagnostics _diagnostics;
     private int _reading;
     private int _pending;
     private bool _started;
@@ -17,12 +19,14 @@ public sealed class ClipboardHistoryCoordinator : IDisposable
         IClipboardChangeWatcher watcher,
         IClipboardSnapshotReader reader,
         IClipboardHistoryStore store,
-        ClipboardReplaySuppression? replaySuppression = null)
+        ClipboardReplaySuppression? replaySuppression = null,
+        IAppDiagnostics? diagnostics = null)
     {
         _watcher = watcher ?? throw new ArgumentNullException(nameof(watcher));
         _reader = reader ?? throw new ArgumentNullException(nameof(reader));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _replaySuppression = replaySuppression;
+        _diagnostics = diagnostics ?? NullAppDiagnostics.Instance;
     }
 
     public void Start()
@@ -70,16 +74,11 @@ public sealed class ClipboardHistoryCoordinator : IDisposable
         }
     }
 
-    private static void TryLog(Exception error)
-    {
-        try
-        {
-            File.AppendAllText(
-                @"C:\temp\index_clipboard.log",
-                $"[{DateTimeOffset.Now:O}] {error}{Environment.NewLine}");
-        }
-        catch { }
-    }
+    private void TryLog(Exception error) => _diagnostics.Write(
+        AppDiagnosticLevel.Error,
+        "clipboard.history",
+        "history-processing-failed",
+        exception: error);
 
     public void Dispose()
     {

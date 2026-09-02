@@ -1,3 +1,4 @@
+using Index.Gallery;
 using Index.Storage;
 using Index.UI.Gallery;
 using Microsoft.UI.Xaml;
@@ -10,10 +11,9 @@ namespace Index.UI.Applications;
 /// <summary>Single-window applications overview and per-application gallery workspace.</summary>
 internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
 {
-    private readonly ShotStore _store;
-    private readonly IShotApplicationSource _applications;
-    private readonly LibraryOrganizationStore _organization;
+    private readonly CapturedApplicationsWorkspaceController _controller;
     private readonly IShotAssetReader _assets;
+    private readonly GalleryShotCommandService _commands;
     private readonly GalleryTheme _theme;
     private readonly Grid _root = new();
     private readonly Grid _overview = new();
@@ -34,31 +34,25 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
     private Button? _searchSurface;
     private ComboBox? _sort;
     private readonly List<IDisposable> _visualResources = [];
-    private IReadOnlyList<CapturedApplicationSummary> _allApplications = [];
-    private CapturedApplicationSort _selectedSort = CapturedApplicationSort.CaptureCount;
-    private CancellationTokenSource? _loadCancellation;
     private ShotGalleryGridView? _gallery;
-    private string? _selectedApplicationId;
-    private string _searchQuery = string.Empty;
-    private int _loadGeneration;
+    private ShotDetailPane? _detail;
     private bool _shellBuilt;
     private bool _initialLoadQueued;
     private bool _disposed;
 
     public ApplicationsWorkspaceView(
-        ShotStore store,
-        LibraryOrganizationStore organization,
+        CapturedApplicationsWorkspaceController controller,
         IShotAssetReader assets,
+        GalleryShotCommandService commands,
         GalleryTheme theme)
     {
-        _store = store ?? throw new ArgumentNullException(nameof(store));
-        _applications = store;
-        _organization = organization ?? throw new ArgumentNullException(nameof(organization));
+        _controller = controller ?? throw new ArgumentNullException(nameof(controller));
         _assets = assets ?? throw new ArgumentNullException(nameof(assets));
+        _commands = commands ?? throw new ArgumentNullException(nameof(commands));
         _theme = theme ?? throw new ArgumentNullException(nameof(theme));
         _overviewHeader = CreateOverviewHeader();
+        _controller.StateChanged += OnWorkspaceStateChanged;
         Unloaded += OnUnloaded;
-        _store.CaptureSaved += OnCaptureSaved;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
         Content = _root;
@@ -73,9 +67,18 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
 
     public event Action<ShotGalleryGridView, ShotRecord>? PreviewRequested;
 
+    public void Refresh()
+    {
+        if (!_disposed)
+            Run(_controller.RefreshAsync());
+    }
+
     public void Start()
     {
-        if (_disposed || _initialLoadQueued || _allApplications.Count > 0)
+        if (_disposed || _initialLoadQueued
+            || _controller.State.Status is not (
+                CapturedApplicationsWorkspaceStatus.Idle
+                or CapturedApplicationsWorkspaceStatus.Cancelled))
             return;
         _initialLoadQueued = true;
         if (DispatcherQueue.TryEnqueue(BeginInitialLoad))
@@ -83,7 +86,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
 
         _initialLoadQueued = false;
         BuildStableShell();
-        RenderFailure("无法将应用页加载任务调度到界面线程。");
+        RenderFailure(null, "无法将应用页加载任务调度到界面线程。");
     }
 
     private void BeginInitialLoad()
@@ -92,7 +95,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         if (_disposed)
             return;
         BuildStableShell();
-        _ = LoadAsync(_selectedApplicationId);
+        Run(_controller.LoadOverviewAsync());
     }
 
     private void AddOverviewControls()
@@ -124,10 +127,10 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
             Children = { _searchSurface, _sort }
         };
         var clearSearch = new Button { Content = "清除" };
-        clearSearch.Click += (_, _) => SetSearchQuery(string.Empty);
+        clearSearch.Click += (_, _) => _controller.SetSearchQuery(string.Empty);
         controls.Children.Add(clearSearch);
         var refresh = new Button { Content = "刷新" };
-        refresh.Click += (_, _) => _ = LoadAsync(null);
+        refresh.Click += (_, _) => Run(_controller.RefreshAsync());
         controls.Children.Add(refresh);
         Grid.SetColumn(controls, 1);
         _overviewHeader.Children.Add(controls);
@@ -140,33 +143,24 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
     {
         if (args.Character < 0x20 || args.Character == 0x7F)
             return;
-        SetSearchQuery(_searchQuery + char.ConvertFromUtf32((int)args.Character));
+        _controller.SetSearchQuery(
+            _controller.SearchQuery + char.ConvertFromUtf32((int)args.Character));
         args.Handled = true;
     }
 
     private void OnSearchKeyDown(object sender, KeyRoutedEventArgs args)
     {
-        if (args.Key == VirtualKey.Back && _searchQuery.Length > 0)
+        var query = _controller.SearchQuery;
+        if (args.Key == VirtualKey.Back && query.Length > 0)
         {
-            SetSearchQuery(_searchQuery[..^1]);
+            _controller.SetSearchQuery(query[..^1]);
             args.Handled = true;
         }
         else if (args.Key == VirtualKey.Escape)
         {
-            SetSearchQuery(string.Empty);
+            _controller.SetSearchQuery(string.Empty);
             args.Handled = true;
         }
-    }
-
-    private void SetSearchQuery(string query)
-    {
-        _searchQuery = query;
-        _searchLabel.Text = string.IsNullOrEmpty(query)
-            ? "搜索应用（点击后输入）"
-            : query;
-        _searchLabel.Foreground = string.IsNullOrEmpty(query) ? _theme.Muted : _theme.Text;
-        if (!_disposed && _selectedApplicationId is null && _allApplications.Count > 0)
-            RenderOverviewBody();
     }
 
     private static ComboBoxItem SortItem(string title, CapturedApplicationSort sort) => new()
@@ -220,110 +214,98 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         AddOverviewControls();
     }
 
-    private void OnUnloaded(object sender, RoutedEventArgs args) => CancelLoad();
-
-    private void OnCaptureSaved(StoredCapture capture)
-    {
-        if (_disposed)
-            return;
-        _ = DispatcherQueue.TryEnqueue(() =>
-        {
-            if (!_disposed)
-                _ = LoadAsync(_selectedApplicationId);
-        });
-    }
+    private void OnUnloaded(object sender, RoutedEventArgs args) =>
+        _controller.CancelCurrent();
 
     private void OnSortChanged(object sender, SelectionChangedEventArgs args)
     {
         if (_sort?.SelectedItem is ComboBoxItem { Tag: CapturedApplicationSort sort })
-            _selectedSort = sort;
-        if (!_disposed && _selectedApplicationId is null && _allApplications.Count > 0)
-            RenderOverviewBody();
+            _controller.SetSort(sort);
     }
 
-    private async Task LoadAsync(string? selectedApplicationId)
+    private void OnWorkspaceStateChanged(CapturedApplicationsWorkspaceState state)
     {
-        CancelLoad();
-        var cancellation = new CancellationTokenSource();
-        _loadCancellation = cancellation;
-        var generation = ++_loadGeneration;
-        ShowLoading(selectedApplicationId is null
-            ? "正在整理来源应用…"
-            : "正在读取应用截图…");
+        if (_disposed)
+            return;
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            RenderWorkspaceState(state);
+            return;
+        }
+
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_disposed)
+                RenderWorkspaceState(_controller.State);
+        });
+    }
+
+    private void RenderWorkspaceState(CapturedApplicationsWorkspaceState state)
+    {
+        _searchLabel.Text = string.IsNullOrEmpty(state.SearchQuery)
+            ? "搜索应用（点击后输入）"
+            : state.SearchQuery;
+        _searchLabel.Foreground = string.IsNullOrEmpty(state.SearchQuery)
+            ? _theme.Muted
+            : _theme.Text;
+
+        switch (state.Status)
+        {
+            case CapturedApplicationsWorkspaceStatus.Loading:
+                ShowLoading(
+                    state.SelectedApplicationId,
+                    state.SelectedApplicationId is null
+                        ? "正在整理来源应用…"
+                        : "正在读取应用截图…");
+                break;
+            case CapturedApplicationsWorkspaceStatus.Overview when state.Overview is not null:
+                RenderOverview(state.Overview, state.SearchQuery);
+                break;
+            case CapturedApplicationsWorkspaceStatus.Application
+                when state.SelectedApplication is not null && state.FirstPage is not null:
+                RenderApplication(state.SelectedApplication, state.FirstPage);
+                break;
+            case CapturedApplicationsWorkspaceStatus.Error:
+                RenderFailure(state.SelectedApplicationId, state.Error ?? "未知错误");
+                break;
+        }
+    }
+
+    private void Run(Task operation) => _ = ObserveAsync(operation);
+
+    private async Task ObserveAsync(Task operation)
+    {
         try
         {
-            var applications = await _applications.GetCapturedApplicationsAsync(
-                cancellationToken: cancellation.Token);
-            CapturedApplicationSummary? selected = null;
-            ShotPage? firstPage = null;
-            if (selectedApplicationId is not null)
-            {
-                selected = applications.FirstOrDefault(application =>
-                    string.Equals(
-                        application.StableId,
-                        selectedApplicationId,
-                        StringComparison.OrdinalIgnoreCase));
-                if (selected is not null)
-                {
-                    firstPage = await _applications.GetApplicationPageAsync(
-                        selected.Identity,
-                        cancellationToken: cancellation.Token);
-                }
-            }
-
-            if (_disposed || cancellation.IsCancellationRequested
-                || generation != _loadGeneration)
-                return;
-            _allApplications = applications;
-            if (selected is not null && firstPage is not null)
-            {
-                _selectedApplicationId = selected.StableId;
-                RenderApplication(selected, firstPage);
-            }
-            else
-            {
-                _selectedApplicationId = null;
-                RenderOverview();
-            }
+            await operation;
         }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException) when (_disposed)
         {
         }
         catch (Exception error)
         {
-            if (!_disposed && generation == _loadGeneration)
-                RenderFailure(error.Message);
-        }
-        finally
-        {
-            if (ReferenceEquals(_loadCancellation, cancellation))
-                _loadCancellation = null;
-            cancellation.Dispose();
+            if (!_disposed)
+                RenderFailure(_controller.State.SelectedApplicationId, error.Message);
         }
     }
 
-    private void RenderOverview()
+    private void RenderOverview(
+        CapturedApplicationOverview overview,
+        string searchQuery)
     {
         DisposeVisualResources();
         _applicationBody.Content = null;
         _applicationBody.Visibility = Visibility.Collapsed;
         _overview.Visibility = Visibility.Visible;
-        RenderOverviewBody();
-    }
-
-    private void RenderOverviewBody()
-    {
-        DisposeVisualResources();
-        var overview = CapturedApplicationCatalog.Create(
-            _allApplications,
-            _searchQuery,
-            _selectedSort);
         _overviewCount.Text = $"{overview.All.Count:N0} 个应用";
         if (overview.All.Count == 0)
         {
             _overviewBody.Content = CenteredMessage(
-            string.IsNullOrWhiteSpace(_searchQuery) ? "还没有应用截图" : "没有匹配的应用",
-                string.IsNullOrWhiteSpace(_searchQuery)
+            string.IsNullOrWhiteSpace(searchQuery) ? "还没有应用截图" : "没有匹配的应用",
+                string.IsNullOrWhiteSpace(searchQuery)
                     ? "截图后，来源应用会自动出现在这里"
                     : "换个应用名称或清空搜索词");
             return;
@@ -341,7 +323,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
             AddSection(sections, "常用应用", overview.Frequent, featured: false);
         AddSection(
             sections,
-            string.IsNullOrWhiteSpace(_searchQuery) ? "全部应用" : "匹配的应用",
+            string.IsNullOrWhiteSpace(searchQuery) ? "全部应用" : "匹配的应用",
             overview.All,
             featured: false);
         var scroll = new ScrollViewer
@@ -381,7 +363,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
             featured,
             _assets,
             _theme,
-            application => _ = LoadAsync(application.StableId));
+            application => Run(_controller.OpenApplicationAsync(application.StableId)));
         _visualResources.Add(cards);
         section.Children.Add(cards);
         parent.Children.Add(section);
@@ -408,11 +390,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var back = new Button { Content = "‹ 应用" };
-        back.Click += (_, _) =>
-        {
-            _selectedApplicationId = null;
-            RenderOverview();
-        };
+        back.Click += (_, _) => _controller.BackToOverview();
         header.Children.Add(back);
         FrameworkElement icon;
         if (application.AppIdentifier is { } identifier)
@@ -451,7 +429,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         Grid.SetColumn(labels, 2);
         header.Children.Add(labels);
         var refresh = new Button { Content = "刷新" };
-        refresh.Click += (_, _) => _ = LoadAsync(application.StableId);
+        refresh.Click += (_, _) => Run(_controller.RefreshAsync());
         Grid.SetColumn(refresh, 3);
         header.Children.Add(refresh);
         page.Children.Add(header);
@@ -463,23 +441,22 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         }
         else
         {
-            var pageSource = new CapturedApplicationPageSource(
-                _applications,
-                application.Identity);
+            var pageSource = _controller.CreatePageSource(application.Identity);
             var gallery = new ShotGalleryGridView(
                 firstPage,
-                _store,
-                _theme,
-                pageSource);
+                pageSource,
+                _assets,
+                _theme);
             _gallery = gallery;
             var detail = new ShotDetailPane(
-                _store,
-                new GalleryShotCommands(_store, _organization, DispatcherQueue),
+                _assets,
+                _commands,
                 _theme);
+            _detail = detail;
             gallery.SelectionChanged += detail.ShowShot;
             gallery.PreviewRequested += shot => PreviewRequested?.Invoke(gallery, shot);
             detail.PreviewRequested += shot => PreviewRequested?.Invoke(gallery, shot);
-            detail.ShotDeleted += deletedShot => _ = LoadAsync(application.StableId);
+            detail.ShotDeleted += deletedShot => Run(_controller.RefreshAsync());
             var split = new Grid { ColumnSpacing = 16 };
             split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             split.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -493,7 +470,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         _applicationBody.Content = page;
     }
 
-    private void ShowLoading(string message)
+    private void ShowLoading(string? selectedApplicationId, string message)
     {
         DisposeVisualResources();
         var loading = new StackPanel
@@ -506,7 +483,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
                 new TextBlock { Text = message, Foreground = _theme.Muted }
             }
         };
-        if (_selectedApplicationId is null)
+        if (selectedApplicationId is null)
         {
             _applicationBody.Content = null;
             _applicationBody.Visibility = Visibility.Collapsed;
@@ -521,7 +498,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         }
     }
 
-    private void RenderFailure(string message)
+    private void RenderFailure(string? selectedApplicationId, string message)
     {
         DisposeVisualResources();
         var panel = CenteredMessage("应用读取失败", message);
@@ -530,9 +507,9 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
             Content = "重试",
             HorizontalAlignment = HorizontalAlignment.Center
         };
-        retry.Click += (_, _) => _ = LoadAsync(_selectedApplicationId);
+        retry.Click += (_, _) => Run(_controller.RefreshAsync());
         panel.Children.Add(retry);
-        if (_selectedApplicationId is null)
+        if (selectedApplicationId is null)
         {
             _applicationBody.Content = null;
             _applicationBody.Visibility = Visibility.Collapsed;
@@ -575,6 +552,8 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
 
     private void DisposeVisualResources()
     {
+        _detail?.Dispose();
+        _detail = null;
         _gallery?.Dispose();
         _gallery = null;
         foreach (var resource in _visualResources)
@@ -582,20 +561,13 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
         _visualResources.Clear();
     }
 
-    private void CancelLoad()
-    {
-        var cancellation = _loadCancellation;
-        _loadCancellation = null;
-        cancellation?.Cancel();
-    }
-
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
-        CancelLoad();
+        _controller.StateChanged -= OnWorkspaceStateChanged;
+        _controller.Dispose();
         DisposeVisualResources();
-        _store.CaptureSaved -= OnCaptureSaved;
         if (_searchSurface is not null)
         {
             _searchSurface.Click -= OnSearchSurfaceClicked;

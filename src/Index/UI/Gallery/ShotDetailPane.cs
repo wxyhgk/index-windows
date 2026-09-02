@@ -1,3 +1,4 @@
+using Index.Gallery;
 using Index.Storage;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -6,19 +7,25 @@ using Microsoft.UI.Xaml.Controls;
 namespace Index.UI.Gallery;
 
 /// <summary>选中截图的详情与快捷动作；不直接访问数据库或平台 API。</summary>
-internal sealed class ShotDetailPane : UserControl
+internal sealed class ShotDetailPane : UserControl, IDisposable
 {
-    private readonly ShotStore _store;
-    private readonly GalleryShotCommands _commands;
+    private readonly IShotAssetReader _assets;
+    private readonly GalleryShotCommandService _commands;
     private readonly GalleryTheme _theme;
     private readonly DispatcherQueue _dispatcher;
     private readonly StackPanel _content;
     private ShotRecord? _shot;
     private int _shotGeneration;
+    private ShotAssetThumbnailView? _previewThumbnail;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private bool _disposed;
 
-    public ShotDetailPane(ShotStore store, GalleryShotCommands commands, GalleryTheme theme)
+    public ShotDetailPane(
+        IShotAssetReader assets,
+        GalleryShotCommandService commands,
+        GalleryTheme theme)
     {
-        _store = store;
+        _assets = assets ?? throw new ArgumentNullException(nameof(assets));
         _commands = commands;
         _theme = theme;
         _dispatcher = DispatcherQueue;
@@ -38,6 +45,7 @@ internal sealed class ShotDetailPane : UserControl
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto
             }
         };
+        Unloaded += OnUnloaded;
         ShowEmpty();
     }
 
@@ -47,8 +55,11 @@ internal sealed class ShotDetailPane : UserControl
 
     public void ShowShot(ShotRecord shot)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         _shot = shot;
         var generation = ++_shotGeneration;
+        _previewThumbnail?.Dispose();
+        _previewThumbnail = new ShotAssetThumbnailView(_assets, shot);
         _content.Children.Clear();
         _content.Children.Add(new TextBlock
         {
@@ -66,10 +77,7 @@ internal sealed class ShotDetailPane : UserControl
             Background = _theme.ThumbnailBackground,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch,
-            Content = new ShotThumbnailView(
-                    _store.ThumbnailPath(shot),
-                    _store.LegacyThumbnailPath(shot),
-                    _store.OriginalPath(shot))
+            Content = _previewThumbnail
         };
         ToolTipService.SetToolTip(preview, "点击预览原图 · Space");
         preview.Click += (_, _) => PreviewRequested?.Invoke(shot);
@@ -104,9 +112,15 @@ internal sealed class ShotDetailPane : UserControl
         actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        AddAction(actions, "复制", 0, 0, () => RunAsync(() => _commands.CopyAsync(shot), "已复制到剪贴板"));
+        AddAction(actions, "复制", 0, 0,
+            () => RunAsync(
+                () => _commands.CopyAsync(shot, _lifetimeCancellation.Token),
+                "已复制到剪贴板"));
         AddAction(actions, "导出", 1, 0, () => ExportAsync(shot));
-        AddAction(actions, "打开原图", 0, 1, () => Run(() => _commands.OpenOriginal(shot), "已打开原图"));
+        AddAction(actions, "打开原图", 0, 1,
+            () => RunAsync(
+                () => _commands.OpenOriginalAsync(shot, _lifetimeCancellation.Token),
+                "已打开原图"));
         AddAction(actions, "删除", 1, 1, () => ConfirmDeleteAsync(shot), destructive: true);
         if (!string.IsNullOrWhiteSpace(shot.SourceUrl))
         {
@@ -132,8 +146,8 @@ internal sealed class ShotDetailPane : UserControl
     {
         try
         {
-            var isFavorite = await _commands.IsFavoriteAsync(shot);
-            var tags = await _commands.GetTagsAsync(shot);
+            var isFavorite = await _commands.IsFavoriteAsync(shot, _lifetimeCancellation.Token);
+            var tags = await _commands.GetTagsAsync(shot, _lifetimeCancellation.Token);
             if (generation != _shotGeneration || _shot?.Id != shot.Id) return;
 
             favoriteButton.Content = isFavorite ? "★ 已收藏" : "☆ 收藏";
@@ -144,7 +158,10 @@ internal sealed class ShotDetailPane : UserControl
                 try
                 {
                     isFavorite = !isFavorite;
-                    await _commands.SetFavoriteAsync(shot, isFavorite);
+                    await _commands.SetFavoriteAsync(
+                        shot,
+                        isFavorite,
+                        _lifetimeCancellation.Token);
                     if (generation != _shotGeneration || _shot?.Id != shot.Id) return;
                     favoriteButton.Content = isFavorite ? "★ 已收藏" : "☆ 收藏";
                     FavoriteChanged?.Invoke(shot, isFavorite);
@@ -180,6 +197,8 @@ internal sealed class ShotDetailPane : UserControl
     {
         _shot = null;
         _shotGeneration++;
+        _previewThumbnail?.Dispose();
+        _previewThumbnail = null;
         _content.Children.Clear();
         _content.Children.Add(new TextBlock
         {
@@ -212,7 +231,7 @@ internal sealed class ShotDetailPane : UserControl
         string title,
         int column,
         int row,
-        Action action,
+        Func<Task> action,
         bool destructive = false)
     {
         var button = new Button
@@ -221,22 +240,35 @@ internal sealed class ShotDetailPane : UserControl
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Foreground = destructive ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.IndianRed) : _theme.Text
         };
-        button.Click += (_, _) => action();
+        button.Click += async (_, _) =>
+        {
+            try
+            {
+                await action();
+            }
+            catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+            {
+            }
+            catch (Exception error)
+            {
+                SetStatus($"操作失败：{error.Message}");
+            }
+        };
         Grid.SetColumn(button, column);
         Grid.SetRow(button, row);
         host.Children.Add(button);
     }
 
-    private async void ExportAsync(ShotRecord shot)
+    private async Task ExportAsync(ShotRecord shot)
     {
         await RunAsync(async () =>
         {
-            var path = await _commands.ExportAsync(shot);
+            var path = await _commands.ExportAsync(shot, _lifetimeCancellation.Token);
             return $"已导出：{path}";
         });
     }
 
-    private async void ConfirmDeleteAsync(ShotRecord shot)
+    private async Task ConfirmDeleteAsync(ShotRecord shot)
     {
         var dialog = new ContentDialog
         {
@@ -250,7 +282,7 @@ internal sealed class ShotDetailPane : UserControl
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         try
         {
-            if (await _commands.DeleteAsync(shot))
+            if (await _commands.DeleteAsync(shot, _lifetimeCancellation.Token))
             {
                 _ = _dispatcher.TryEnqueue(() => ShotDeleted?.Invoke(shot));
             }
@@ -261,7 +293,7 @@ internal sealed class ShotDetailPane : UserControl
         }
     }
 
-    private async void RunAsync(Func<Task> action, string success)
+    private async Task RunAsync(Func<Task> action, string success)
     {
         await RunAsync(async () =>
         {
@@ -284,22 +316,46 @@ internal sealed class ShotDetailPane : UserControl
         }
     }
 
-    private void Run(Action action, string success)
+    private Task Run(Action action, string success)
     {
         try
         {
             action();
             SetStatus(success);
+            return Task.CompletedTask;
         }
         catch (Exception error)
         {
             SetStatus($"操作失败：{error.Message}");
+            return Task.CompletedTask;
         }
     }
 
     private void SetStatus(string message)
     {
+        if (_disposed)
+            return;
         var status = _content.Children.OfType<TextBlock>().FirstOrDefault(child => child.Name == "StatusText");
         if (status is not null) status.Text = message;
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs args)
+    {
+        _shotGeneration++;
+        _previewThumbnail?.Dispose();
+        _previewThumbnail = null;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+        _disposed = true;
+        _lifetimeCancellation.Cancel();
+        Unloaded -= OnUnloaded;
+        _shotGeneration++;
+        _previewThumbnail?.Dispose();
+        _previewThumbnail = null;
+        _lifetimeCancellation.Dispose();
     }
 }

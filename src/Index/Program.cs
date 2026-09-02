@@ -10,10 +10,15 @@ using Index.Platform.Clipboard;
 using Index.Platform.Export;
 using Index.Settings;
 using Index.UI;
+using Index.UI.Gallery;
 using Index.UI.Pin;
 using Index.Storage;
 using Index.Recognition;
 using Index.Platform.Windowing;
+using Index.Platform.Diagnostics;
+using Index.Search;
+using Index.Gallery;
+using System.Diagnostics;
 
 namespace Index;
 
@@ -35,7 +40,11 @@ public static class Program
     private static RecognitionPluginRegistry? _recognitionPlugins;
     private static LocalRecognitionHost? _recognitionHost;
     private static SystemTrayIcon? _trayIcon;
+    private static VirtualDisplayCaptureWorkflow? _virtualDisplayCapture;
     private static Task? _virtualWindowCaptureTask;
+    private static readonly object VirtualWindowCaptureGate = new();
+    private static readonly CancellationTokenSource ApplicationLifetime = new();
+    private static readonly IAppDiagnostics Diagnostics = new LocalAppDiagnostics();
 
     [STAThread]
     private static void Main(string[] args)
@@ -49,6 +58,7 @@ public static class Program
                 _libraryOrganization = LibraryOrganizationStore.OpenDefaultAsync().GetAwaiter().GetResult();
                 _shortcutSettings = new ShortcutSettingsStore();
                 var clipboardWriter = new WindowsClipboardWriter();
+                var imageExporter = new WindowsImageExporter();
                 var clipboardReplaySuppression = new ClipboardReplaySuppression();
                 var clipboardHistoryWriter = new ClipboardHistoryReplayWriter(
                     clipboardWriter,
@@ -57,20 +67,24 @@ public static class Program
                 _clipboardPopup = new ClipboardPopupModule(
                     _clipboardStore,
                     clipboardHistoryWriter,
-                    new WindowsClipboardPasteTarget());
+                    new WindowsClipboardPasteTarget(),
+                    Diagnostics);
                 _clipboardHistory = new ClipboardHistoryCoordinator(
                     new WindowsClipboardWatcher(),
                     new WindowsClipboardSnapshotReader(sourceResolver),
                     _clipboardStore,
-                    clipboardReplaySuppression);
+                    clipboardReplaySuppression,
+                    Diagnostics);
                 var actionRegistry = new CaptureActionRegistry();
                 _pinWindows = new PinWindowManager(actionRegistry);
                 actionRegistry.Register(new CompleteCaptureAction());
                 actionRegistry.Register(new CopyAction(clipboardWriter));
-                actionRegistry.Register(new SaveAction(new WindowsImageExporter()));
+                actionRegistry.Register(new SaveAction(imageExporter));
                 actionRegistry.Register(new CloseCaptureAction());
                 actionRegistry.Register(new PinAction(_pinWindows));
-                var graphicsCapture = new WindowsGraphicsCaptureInterop();
+                var actionExecutor = new CaptureActionExecutor(actionRegistry);
+                var actionContextFactory = new CaptureActionContextFactory();
+                var graphicsCapture = new WindowsGraphicsCaptureInterop(Diagnostics);
                 var displayCatalog = new WindowsDisplayCatalog();
                 var screenFreezer = new ScreenFreezer(graphicsCapture, displayCatalog);
                 var virtualDisplayController = new MttVirtualDisplayController(displayCatalog);
@@ -79,7 +93,7 @@ public static class Program
                     _shotStore,
                     sourceResolver,
                     new WindowsBrowserSourceMetadataResolver());
-                var virtualDisplayCapture = new VirtualDisplayCaptureWorkflow(
+                _virtualDisplayCapture = new VirtualDisplayCaptureWorkflow(
                     new MttVirtualDisplayCaptureSource(
                         displayCatalog,
                         graphicsCapture,
@@ -97,19 +111,42 @@ public static class Program
                     sourceResolver,
                     imagePreparer,
                     capturePersistence);
-                _coordinator = new CaptureCoordinator(
-                    screenFreezer,
-                    screenFreezer,
-                    new CaptureActionExecutor(actionRegistry),
-                    sourceResolver,
-                    graphicsCapture,
+                var highResolutionCapture = new HighResolutionCaptureOrchestrator(
                     virtualWindowFrameSource,
                     imagePreparer,
                     capturePersistence,
-                    new CaptureActionContextFactory(),
-                    _shortcutSettings);
+                    actionExecutor,
+                    actionContextFactory);
+                _coordinator = new CaptureCoordinator(
+                    screenFreezer,
+                    screenFreezer,
+                    actionExecutor,
+                    sourceResolver,
+                    graphicsCapture,
+                    highResolutionCapture,
+                    imagePreparer,
+                    capturePersistence,
+                    actionContextFactory,
+                    _shortcutSettings,
+                    Diagnostics);
                 _coordinator.InitOnUiThread();
                 var shotAssetReader = new WindowsShotAssetReader(_shotStore);
+                var galleryCommandService = new GalleryShotCommandService(
+                    _shotStore,
+                    _libraryOrganization,
+                    shotAssetReader,
+                    new WindowsShotAssetOpener(_shotStore, shotAssetReader),
+                    new WindowsExternalUriOpener(),
+                    clipboardHistoryWriter,
+                    imageExporter);
+                var unifiedSearch = new UnifiedSearchService(
+                    _shotStore,
+                    _clipboardStore);
+                var applicationsWorkspaceControllers =
+                    new CapturedApplicationsWorkspaceControllerFactory(_shotStore);
+                var libraryWorkspaceController = new LibraryWorkspaceController(
+                    _shotStore,
+                    _libraryOrganization);
                 _recognitionHost = new LocalRecognitionHost();
                 _recognitionPlugins = new RecognitionPluginRegistry(
                     new IRecognitionPlugin[]
@@ -119,12 +156,15 @@ public static class Program
                 _mainWindow = new MainWindow(
                     _coordinator,
                     _shotStore,
-                    _libraryOrganization,
+                    libraryWorkspaceController,
                     _shortcutSettings,
-                    virtualDisplayCapture,
+                    _virtualDisplayCapture,
                     _clipboardStore,
                     clipboardHistoryWriter,
+                    unifiedSearch,
+                    applicationsWorkspaceControllers,
                     shotAssetReader,
+                    galleryCommandService,
                     _recognitionPlugins);
                 _mainWindow.Activate();
                 InitializeTrayIcon(_mainWindow);
@@ -135,7 +175,10 @@ public static class Program
                         if (!_mainWindow.DispatcherQueue.TryEnqueue(
                                 () => _ = _coordinator.BeginCaptureAsync("hotkey")))
                         {
-                            LogStartupFailure(new InvalidOperationException(
+                            LogRuntimeFailure(
+                                "capture.hotkey",
+                                "dispatch-failed",
+                                new InvalidOperationException(
                                 "Could not dispatch the capture hotkey to the UI thread."));
                         }
                     },
@@ -146,6 +189,7 @@ public static class Program
                 _clipboardHistory.Start();
                 _mainWindow.Closed += (_, _) =>
                 {
+                    ShutdownCaptureWork();
                     _shortcutController?.Dispose();
                     _clipboardHistory?.Dispose();
                     _clipboardPopup?.Close();
@@ -164,25 +208,28 @@ public static class Program
         });
     }
 
-    private static void LogStartupFailure(Exception error)
-    {
-        try
-        {
-            File.AppendAllText(
-                @"C:\temp\index_startup_error.log",
-                $"[{DateTime.Now:O}] {error}{Environment.NewLine}");
-        }
-        catch
-        {
-        }
-    }
+    private static void LogStartupFailure(Exception error) => Diagnostics.Write(
+        AppDiagnosticLevel.Error,
+        "startup",
+        "startup-failed",
+        exception: error);
 
     private static void StartVirtualWindowCapture(VirtualWindowCaptureWorkflow workflow)
     {
-        // CaptureForegroundAndSaveAsync freezes the foreground HWND synchronously before its first
-        // await. Keep this callback on the hotkey thread so Index never becomes the capture target.
-        var capture = workflow.CaptureForegroundAndSaveAsync();
-        _virtualWindowCaptureTask = ObserveVirtualWindowCaptureAsync(capture);
+        lock (VirtualWindowCaptureGate)
+        {
+            if (ApplicationLifetime.IsCancellationRequested
+                || _virtualWindowCaptureTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            // CaptureForegroundAndSaveAsync freezes the foreground HWND synchronously before its
+            // first await. Keep this callback on the hotkey thread so Index never becomes the
+            // capture target.
+            var capture = workflow.CaptureForegroundAndSaveAsync(ApplicationLifetime.Token);
+            _virtualWindowCaptureTask = ObserveVirtualWindowCaptureAsync(capture);
+        }
     }
 
     private static async Task ObserveVirtualWindowCaptureAsync(
@@ -191,20 +238,113 @@ public static class Program
         try
         {
             var outcome = await capture.ConfigureAwait(false);
-            Directory.CreateDirectory(@"C:\temp");
-            await File.AppendAllTextAsync(
-                @"C:\temp\index_capture.log",
-                $"[{DateTime.Now:O}] 4K current window: {outcome.Kind}; " +
-                $"{outcome.Width}x{outcome.Height}; {outcome.Message}{Environment.NewLine}")
-                .ConfigureAwait(false);
+            Diagnostics.Write(
+                AppDiagnosticLevel.Information,
+                "capture.4k-hotkey",
+                "capture-completed",
+                new Dictionary<string, string?>
+                {
+                    ["outcome"] = outcome.Kind.ToString(),
+                    ["dimensions"] = $"{outcome.Width}x{outcome.Height}",
+                });
         }
         catch (Exception error)
         {
-            LogStartupFailure(new InvalidOperationException(
-                "The 4K current-window hotkey failed unexpectedly.",
-                error));
+            LogRuntimeFailure(
+                "capture.4k-hotkey",
+                "capture-failed",
+                error);
         }
     }
+
+    private static CaptureShutdownWork BeginVirtualWindowCaptureShutdown()
+    {
+        try
+        {
+            ApplicationLifetime.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        Task? capture;
+        lock (VirtualWindowCaptureGate)
+            capture = _virtualWindowCaptureTask;
+
+        return new CaptureShutdownWork(
+            "current-window-hotkey",
+            capture ?? Task.CompletedTask);
+    }
+
+    private static void ShutdownCaptureWork()
+    {
+        try
+        {
+            var shutdownStarted = Stopwatch.GetTimestamp();
+            var totalBudget = TimeSpan.FromSeconds(30);
+            var work = new[]
+            {
+                _coordinator?.BeginShutdown()
+                    ?? new CaptureShutdownWork(
+                        "overlay-high-resolution",
+                        Task.CompletedTask),
+                BeginVirtualWindowCaptureShutdown(),
+                _virtualDisplayCapture?.BeginShutdown()
+                    ?? new CaptureShutdownWork(
+                        "virtual-display",
+                        Task.CompletedTask)
+            };
+            var remainingBudget = totalBudget - Stopwatch.GetElapsedTime(shutdownStarted);
+            if (remainingBudget < TimeSpan.Zero)
+                remainingBudget = TimeSpan.Zero;
+            var report = CaptureShutdownCoordinator
+                .WaitAsync(work, remainingBudget)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+
+            if (!report.CompletedWithinBudget)
+            {
+                Diagnostics.Write(
+                    AppDiagnosticLevel.Warning,
+                    "capture.shutdown",
+                    "restoration-timeout",
+                    new Dictionary<string, string?>
+                    {
+                        ["participants"] = string.Join(",", report.Pending)
+                    });
+            }
+
+            foreach (var failure in report.Failures)
+            {
+                Diagnostics.Write(
+                    AppDiagnosticLevel.Error,
+                    "capture.shutdown",
+                    "restoration-failed",
+                    new Dictionary<string, string?>
+                    {
+                        ["participant"] = failure.Name
+                    },
+                    failure.Error);
+            }
+        }
+        catch (Exception error)
+        {
+            LogRuntimeFailure(
+                "capture.shutdown",
+                "coordination-failed",
+                error);
+        }
+    }
+
+    private static void LogRuntimeFailure(
+        string category,
+        string eventName,
+        Exception error) => Diagnostics.Write(
+            AppDiagnosticLevel.Error,
+            category,
+            eventName,
+            exception: error);
 
     private static void InitializeTrayIcon(MainWindow mainWindow)
     {

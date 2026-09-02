@@ -28,6 +28,8 @@ public sealed class LibraryOrganizationStoreTests : IDisposable
 
         var reopened = await LibraryOrganizationStore.OpenAsync(_root);
         Assert.Contains(first.Shot.Id, await reopened.GetFavoriteIdsAsync());
+        Assert.True(await reopened.IsFavoriteAsync(first.Shot.Id));
+        Assert.False(await reopened.IsFavoriteAsync(second.Shot.Id));
         Assert.Equal(["论文"], await reopened.GetTagsAsync(first.Shot.Id));
         Assert.Equal([second.Shot.Id, first.Shot.Id], await reopened.GetCollectionShotIdsAsync(collection.Id));
         var summary = Assert.Single(await reopened.GetCollectionsAsync());

@@ -7,16 +7,19 @@ using SkiaSharp.Views.Windows;
 
 namespace Index.UI.Gallery;
 
-/// <summary>Thumbnail surface that reads through the shared shot-asset boundary.</summary>
+/// <summary>A recyclable thumbnail surface backed only by the shot-asset contract.</summary>
 internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
 {
     private readonly IShotAssetReader _assets;
-    private readonly ShotRecord _shot;
     private readonly SKXamlCanvas _canvas;
     private CancellationTokenSource? _cancellation;
+    private ShotRecord _shot;
     private SKBitmap? _bitmap;
     private string? _message;
     private bool _disposed;
+    private bool _loadingEnabled = true;
+    private int _generation;
+    private Task _loadTask = Task.CompletedTask;
 
     public ShotAssetThumbnailView(IShotAssetReader assets, ShotRecord shot)
     {
@@ -41,15 +44,37 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
         };
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs args) => BeginLoad();
+    private void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        if (_loadingEnabled)
+            BeginLoad();
+    }
 
     private void OnUnloaded(object sender, RoutedEventArgs args) => ReleaseImage();
 
-    private async void BeginLoad()
+    private void BeginLoad()
     {
-        if (_disposed || _cancellation is not null)
+        if (_disposed || !_loadingEnabled || _cancellation is not null)
             return;
 
+        _loadTask = ObserveLoadAsync();
+    }
+
+    private async Task ObserveLoadAsync()
+    {
+        try
+        {
+            await LoadAsync();
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine($"Thumbnail load failed: {error.Message}");
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        var generation = _generation;
         var cancellation = new CancellationTokenSource();
         _cancellation = cancellation;
         var dispatcher = DispatcherQueue;
@@ -58,8 +83,10 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
             var asset = await _assets.ReadPreviewAsync(_shot, cancellation.Token);
             if (!asset.HasData)
             {
-                if (!dispatcher.TryEnqueue(() => ApplyMessage(asset.Warning ?? "图片不存在", cancellation)))
-                    return;
+                _ = dispatcher.TryEnqueue(() => ApplyMessage(
+                    asset.Warning ?? StatusMessage(asset.Status),
+                    cancellation,
+                    generation));
                 return;
             }
 
@@ -67,10 +94,13 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
             var bitmap = await Task.Run(() => SKBitmap.Decode(bytes), cancellation.Token);
             if (bitmap is null)
             {
-                _ = dispatcher.TryEnqueue(() => ApplyMessage("图片损坏", cancellation));
+                _ = dispatcher.TryEnqueue(() => ApplyMessage(
+                    "图片文件损坏",
+                    cancellation,
+                    generation));
                 return;
             }
-            if (!dispatcher.TryEnqueue(() => ApplyBitmap(bitmap, cancellation)))
+            if (!dispatcher.TryEnqueue(() => ApplyBitmap(bitmap, asset.Warning, cancellation, generation)))
                 bitmap.Dispose();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -78,14 +108,17 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
         }
         catch (Exception error)
         {
-            _ = dispatcher.TryEnqueue(() => ApplyMessage(error.Message, cancellation));
+            _ = dispatcher.TryEnqueue(() => ApplyMessage(error.Message, cancellation, generation));
         }
     }
 
-    private void ApplyBitmap(SKBitmap bitmap, CancellationTokenSource cancellation)
+    private void ApplyBitmap(
+        SKBitmap bitmap,
+        string? warning,
+        CancellationTokenSource cancellation,
+        int generation)
     {
-        if (_disposed || cancellation.IsCancellationRequested
-            || !ReferenceEquals(_cancellation, cancellation))
+        if (!IsCurrent(cancellation, generation))
         {
             bitmap.Dispose();
             return;
@@ -94,18 +127,27 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
         _bitmap?.Dispose();
         _bitmap = bitmap;
         _message = null;
+        ToolTipService.SetToolTip(this, warning);
         _canvas.Invalidate();
     }
 
-    private void ApplyMessage(string message, CancellationTokenSource cancellation)
+    private void ApplyMessage(
+        string message,
+        CancellationTokenSource cancellation,
+        int generation)
     {
-        if (_disposed || cancellation.IsCancellationRequested
-            || !ReferenceEquals(_cancellation, cancellation))
+        if (!IsCurrent(cancellation, generation))
             return;
         _message = message;
         ToolTipService.SetToolTip(this, message);
         _canvas.Invalidate();
     }
+
+    private bool IsCurrent(CancellationTokenSource cancellation, int generation)
+        => !_disposed
+           && !cancellation.IsCancellationRequested
+           && generation == _generation
+           && ReferenceEquals(_cancellation, cancellation);
 
     private void Paint(object? sender, SKPaintSurfaceEventArgs args)
     {
@@ -139,6 +181,37 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
         canvas.DrawText("无预览", 12, 24, SKTextAlign.Left, font, textPaint);
     }
 
+    public void Bind(ShotRecord shot)
+    {
+        ArgumentNullException.ThrowIfNull(shot);
+        if (_shot.Id == shot.Id && string.Equals(_shot.Sha256, shot.Sha256, StringComparison.Ordinal))
+            return;
+
+        _shot = shot;
+        _generation++;
+        ReleaseImage();
+        _message = null;
+        ToolTipService.SetToolTip(this, null);
+        _canvas.Invalidate();
+        if (_loadingEnabled && IsLoaded)
+            BeginLoad();
+    }
+
+    public void SetLoadingEnabled(bool enabled)
+    {
+        if (_disposed || _loadingEnabled == enabled)
+            return;
+        _loadingEnabled = enabled;
+        if (!enabled)
+        {
+            _generation++;
+            ReleaseImage();
+            return;
+        }
+        if (IsLoaded)
+            BeginLoad();
+    }
+
     private void ReleaseImage()
     {
         _cancellation?.Cancel();
@@ -150,11 +223,19 @@ internal sealed class ShotAssetThumbnailView : UserControl, IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+            return;
         _disposed = true;
+        _generation++;
         Loaded -= OnLoaded;
         Unloaded -= OnUnloaded;
         _canvas.PaintSurface -= Paint;
         ReleaseImage();
     }
+
+    private static string StatusMessage(ShotAssetStatus status) => status switch
+    {
+        ShotAssetStatus.Corrupt => "图片文件损坏",
+        _ => "图片文件不存在"
+    };
 }

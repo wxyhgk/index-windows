@@ -1,5 +1,6 @@
 using Index.Platform;
 using Index.Storage;
+using Index.UI.Applications;
 using Index.UI.Gallery;
 using Microsoft.UI.Xaml;
 
@@ -11,6 +12,19 @@ public sealed partial class MainWindow
     {
         DispatcherQueue.TryEnqueue(() =>
         {
+            if (_isClosing)
+                return;
+            if (_navigation.IsAppsWorkspace)
+            {
+                if (_previewView is not null
+                    && _contentHost.IsOverlayVisible(_previewView))
+                {
+                    _applicationsRefreshPending = true;
+                    return;
+                }
+                _pageOwner.Find<ApplicationsWorkspaceView>()?.Refresh();
+                return;
+            }
             if (!_navigation.IsLibraryShots)
                 return;
             if (_previewView is not null
@@ -26,16 +40,34 @@ public sealed partial class MainWindow
 
     private void OnClosed(object sender, WindowEventArgs args)
     {
-        CancelTrayMemoryTrim();
-        ClosePreview();
-        CloseSearch();
-        DisposeActiveGallery();
-        DisposeApplicationsWorkspace();
-        _previewView?.Dispose();
+        _isClosing = true;
+        _galleryRefreshPending = false;
+        _applicationsRefreshPending = false;
+        RunCloseStep(() => _navigation.Refresh());
+        RunCloseStep(() => _ = _coordinator.BeginShutdown());
+        RunCloseStep(CancelTrayMemoryTrim);
+        RunCloseStep(() => ClosePreview(refreshSource: false));
+        RunCloseStep(_pageOwner.Dispose);
+        RunCloseStep(_libraryWorkspaceController.Dispose);
+        RunCloseStep(() => _previewView?.Dispose());
         _previewView = null;
-        _shotStore.CaptureSaved -= OnCaptureSaved;
-        AppWindow.Closing -= OnAppWindowClosing;
-        Closed -= OnClosed;
+        RunCloseStep(() => _shotLibrary.CaptureSaved -= OnCaptureSaved);
+        RunCloseStep(() => AppWindow.Closing -= OnAppWindowClosing);
+        RunCloseStep(() => Closed -= OnClosed);
+    }
+
+    private static void RunCloseStep(Action step)
+    {
+        try
+        {
+            step();
+        }
+        catch (Exception error)
+        {
+            // Closed event subscribers run sequentially. Never prevent the composition root's
+            // later handler from canceling and awaiting display/window lease restoration.
+            System.Diagnostics.Debug.WriteLine($"Main window cleanup failed: {error}");
+        }
     }
 
     private void OnAppWindowClosing(
@@ -47,7 +79,7 @@ public sealed partial class MainWindow
 
         args.Cancel = true;
         sender.Hide();
-        _activeGallery?.SetBackgrounded(true);
+        _pageOwner.Find<ShotGalleryGridView>()?.SetBackgrounded(true);
         ScheduleTrayMemoryTrim();
     }
 
@@ -56,7 +88,7 @@ public sealed partial class MainWindow
     public void ShowFromTray()
     {
         CancelTrayMemoryTrim();
-        _activeGallery?.SetBackgrounded(false);
+        _pageOwner.Find<ShotGalleryGridView>()?.SetBackgrounded(false);
         AppWindow.Show();
         Activate();
     }

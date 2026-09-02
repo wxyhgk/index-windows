@@ -17,6 +17,7 @@ using Index.Annotation;
 using Index.Capture;
 using Index.Toolbar;
 using Index.UI.Toolbar;
+using Index.Platform.Diagnostics;
 
 namespace Index.UI.Editor;
 
@@ -26,6 +27,7 @@ namespace Index.UI.Editor;
 /// </summary>
 public sealed class OverlayWindow : Window
 {
+    private readonly IAppDiagnostics _diagnostics;
     private const double HandleHitRadius = 12;
     private const double MinSelectionSize = 5;
 
@@ -86,8 +88,9 @@ public sealed class OverlayWindow : Window
     public event Action<OverlayWindow>? CancelRequested;
     public bool CloseOnCapture { get; set; } = true;
 
-    public OverlayWindow()
+    public OverlayWindow(IAppDiagnostics diagnostics)
     {
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
         AppWindow.Title = "";
         BuiltinToolbarControls.RegisterCaptureDefaults(_toolbarRegistry);
         AnnotationToolbarControls.RegisterCaptureAnnotationDefaults(_toolbarRegistry);
@@ -185,10 +188,17 @@ public sealed class OverlayWindow : Window
                 hostBounds.Width,
                 hostBounds.Height));
         var actual = hostResult.ActualBounds;
-        System.IO.File.AppendAllText(@"C:\temp\index_capture.log",
-            $"[overlay] Show: display=({snapshot.Left},{snapshot.Top},{snapshot.Width}x{snapshot.Height}) " +
-            $"dpiScale={snapshot.DpiScale:F3} host={hostResult.Succeeded} " +
-            $"actual={actual}\n");
+        _diagnostics.Write(
+            AppDiagnosticLevel.Trace,
+            "capture.overlay",
+            "overlay-shown",
+            new Dictionary<string, string?>
+            {
+                ["displayBounds"] = $"{snapshot.Left},{snapshot.Top},{snapshot.Width}x{snapshot.Height}",
+                ["dpiScale"] = snapshot.DpiScale.ToString("F3", System.Globalization.CultureInfo.InvariantCulture),
+                ["hostSucceeded"] = hostResult.Succeeded.ToString(),
+                ["actualBounds"] = actual.ToString(),
+            });
 
         _rootGrid.Focus(FocusState.Programmatic);
 

@@ -55,6 +55,10 @@ public sealed class VirtualDisplayCaptureWorkflow
     private readonly ISourceApplicationResolver _sourceApplicationResolver;
     private readonly ICaptureImagePreparer _imagePreparer;
     private readonly ICapturePersistenceService _persistenceService;
+    private readonly CaptureTransitionTaskTracker _captureTransitions = new();
+    private readonly CancellationTokenSource _shutdownCancellation = new();
+    private readonly object _lifetimeGate = new();
+    private bool _shutdownStarted;
     private int _captureInProgress;
 
     public VirtualDisplayCaptureWorkflow(
@@ -74,19 +78,75 @@ public sealed class VirtualDisplayCaptureWorkflow
 
     public VirtualDisplayCaptureStatus GetStatus() => _frameSource.GetStatus();
 
-    public async Task<VirtualDisplayCaptureOutcome> CaptureAndSaveAsync(
-        CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Waits until the active capture has returned its display lease, or until the bound expires.
+    /// A canceled capture remains active here while platform cleanup is still running.
+    /// </summary>
+    public Task<bool> WaitForCompletionAsync(TimeSpan timeout) =>
+        _captureTransitions.WaitForCompletionAsync(timeout);
+
+    /// <summary>
+    /// Prevents new work, cancels the active capture, and exposes the restoration task without
+    /// applying a timeout to the display lease itself.
+    /// </summary>
+    public CaptureShutdownWork BeginShutdown()
     {
-        if (Interlocked.CompareExchange(ref _captureInProgress, 1, 0) != 0)
+        Task restoration;
+        lock (_lifetimeGate)
         {
-            return new VirtualDisplayCaptureOutcome(
-                VirtualDisplayCaptureOutcomeKind.Busy,
-                "已有一项虚拟屏截图正在进行。");
+            _shutdownStarted = true;
+            restoration = _captureTransitions.CloseAndGetCurrent();
         }
 
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            _shutdownCancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        return new CaptureShutdownWork("virtual-display", restoration);
+    }
+
+    public async Task<VirtualDisplayCaptureOutcome> CaptureAndSaveAsync(
+        CancellationToken cancellationToken = default)
+    {
+        TaskCompletionSource completion;
+        lock (_lifetimeGate)
+        {
+            if (_shutdownStarted)
+            {
+                return new VirtualDisplayCaptureOutcome(
+                    VirtualDisplayCaptureOutcomeKind.Canceled,
+                    "虚拟屏截图已取消。");
+            }
+
+            if (Interlocked.CompareExchange(ref _captureInProgress, 1, 0) != 0)
+            {
+                return new VirtualDisplayCaptureOutcome(
+                    VirtualDisplayCaptureOutcomeKind.Busy,
+                    "已有一项虚拟屏截图正在进行。");
+            }
+
+            completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!_captureTransitions.TryTrack(() => completion.Task, out _))
+            {
+                Interlocked.Exchange(ref _captureInProgress, 0);
+                return new VirtualDisplayCaptureOutcome(
+                    VirtualDisplayCaptureOutcomeKind.Canceled,
+                    "虚拟屏截图已取消。");
+            }
+        }
+
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _shutdownCancellation.Token);
+        var captureCancellationToken = linkedCancellation.Token;
+        try
+        {
+            captureCancellationToken.ThrowIfCancellationRequested();
             var status = _frameSource.GetStatus();
             if (status.Availability == VirtualDisplayAvailability.NotInstalled)
             {
@@ -96,10 +156,27 @@ public sealed class VirtualDisplayCaptureWorkflow
             }
 
             var sourceSnapshot = _sourceApplicationResolver.CaptureSnapshot();
-            var display = await _frameSource
-                .CaptureAsync(cancellationToken)
-                .ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
+            DisplaySnapshot display;
+            try
+            {
+                display = await _frameSource
+                    .CaptureAsync(captureCancellationToken)
+                    .ConfigureAwait(false);
+                completion.TrySetResult();
+            }
+            catch (OperationCanceledException) when (captureCancellationToken.IsCancellationRequested)
+            {
+                completion.TrySetResult();
+                throw;
+            }
+            catch (Exception error)
+            {
+                // CaptureAsync owns and restores the display lease. Surface a failure from that
+                // scope to shutdown diagnostics even though the workflow also returns Failed.
+                completion.TrySetException(error);
+                throw;
+            }
+            captureCancellationToken.ThrowIfCancellationRequested();
 
             var selection = new CaptureSelection
             {
@@ -131,7 +208,7 @@ public sealed class VirtualDisplayCaptureWorkflow
                     globalRegion,
                     sourceSnapshot,
                     DateTimeOffset.Now),
-                cancellationToken).ConfigureAwait(false);
+                captureCancellationToken).ConfigureAwait(false);
 
             return new VirtualDisplayCaptureOutcome(
                 VirtualDisplayCaptureOutcomeKind.Success,
@@ -140,7 +217,7 @@ public sealed class VirtualDisplayCaptureWorkflow
                 display.Width,
                 display.Height);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (captureCancellationToken.IsCancellationRequested)
         {
             return new VirtualDisplayCaptureOutcome(
                 VirtualDisplayCaptureOutcomeKind.Canceled,
@@ -154,6 +231,9 @@ public sealed class VirtualDisplayCaptureWorkflow
         }
         finally
         {
+            // Covers early exits before CaptureAsync starts. Once it does start, the completion
+            // is settled immediately after its display lease has restored, before persistence.
+            completion.TrySetResult();
             Interlocked.Exchange(ref _captureInProgress, 0);
         }
     }

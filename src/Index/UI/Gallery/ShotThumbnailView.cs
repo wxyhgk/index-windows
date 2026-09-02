@@ -44,12 +44,14 @@ internal sealed class ShotThumbnailView : UserControl, IDisposable
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (_loadingEnabled)
-            BeginLoad();
+            StartLoad();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e) => ReleaseViewResources();
 
-    private async void BeginLoad()
+    private void StartLoad() => _ = LoadAsync();
+
+    private async Task LoadAsync()
     {
         if (_disposed || _lease is not null) return;
         ReleaseViewResources();
@@ -166,7 +168,7 @@ internal sealed class ShotThumbnailView : UserControl, IDisposable
             return;
         }
         if (IsLoaded)
-            BeginLoad();
+            StartLoad();
     }
 
     public void SetPaths(params string[] paths)
@@ -178,6 +180,6 @@ internal sealed class ShotThumbnailView : UserControl, IDisposable
         _error = null;
         _canvas.Invalidate();
         if (_loadingEnabled && IsLoaded)
-            BeginLoad();
+            StartLoad();
     }
 }

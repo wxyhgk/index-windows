@@ -33,12 +33,14 @@ internal sealed class SourceIconView : Grid, IDisposable
 
     private void OnLoaded(object sender, RoutedEventArgs args)
     {
-        if (!string.IsNullOrWhiteSpace(_sourceUrl)) BeginLoad();
+        if (!string.IsNullOrWhiteSpace(_sourceUrl)) StartLoad();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs args) => ReleaseFavicon();
 
-    private async void BeginLoad()
+    private void StartLoad() => _ = LoadAsync();
+
+    private async Task LoadAsync()
     {
         if (_disposed || _cancellation is not null) return;
         var cancellation = new CancellationTokenSource();
@@ -55,6 +57,10 @@ internal sealed class SourceIconView : Grid, IDisposable
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine($"Website favicon load failed: {error}");
         }
     }
 

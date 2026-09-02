@@ -1,5 +1,6 @@
 using Index.Navigation;
 using Index.Storage;
+using Index.UI.Applications;
 using Index.UI.Gallery;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -13,18 +14,43 @@ public sealed partial class MainWindow
 {
     private async Task LoadShotGalleryAsync(int generation)
     {
+        MainPageLease? candidate = null;
         try
         {
-            var countTask = _shotStore.GetCountAsync();
-            var firstPageTask = _shotStore.GetPageAsync();
-            await Task.WhenAll(countTask, firstPageTask);
-            var totalCount = await countTask;
-            var firstPage = await firstPageTask;
-            var shots = firstPage.Items;
-            if (generation != _navigation.Generation)
+            var state = await _libraryWorkspaceController.LoadGalleryAsync();
+            if (generation != _navigation.Generation
+                || state.Status == LibraryWorkspaceStatus.Cancelled)
+                return;
+            if (state.Status == LibraryWorkspaceStatus.Error)
+            {
+                var failed = MakeCenteredMessage(
+                    "图库读取失败",
+                    state.Error ?? "未知错误");
+                _pageOwner.CommitOrDispose(
+                    new MainPageLease(
+                        new MainPageIdentity(
+                            MainNavigationPage.Library,
+                            LibrarySection.Shots),
+                        MainPageMount.LibraryBody,
+                        failed),
+                    generation,
+                    _navigation.Generation);
+                return;
+            }
+            if (state is not { Status: LibraryWorkspaceStatus.Gallery, Gallery: { } snapshot })
                 return;
 
+            var totalCount = snapshot.TotalCount;
+            var firstPage = snapshot.FirstPage;
+            var shots = firstPage.Items;
+
             var page = new Grid();
+            candidate = new MainPageLease(
+                new MainPageIdentity(
+                    MainNavigationPage.Library,
+                    LibrarySection.Shots),
+                MainPageMount.LibraryBody,
+                page);
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -51,7 +77,6 @@ public sealed partial class MainWindow
             page.Children.Add(header);
 
             FrameworkElement body;
-            ShotGalleryGridView? nextGallery = null;
             if (shots.Count == 0)
             {
                 var empty = MakeCenteredMessage("还没有截图", "按 Ctrl + Shift + A 开始截图");
@@ -63,20 +88,32 @@ public sealed partial class MainWindow
             }
             else
             {
-                var gallery = new ShotGalleryGridView(firstPage, _shotStore, _theme);
-                nextGallery = gallery;
-                var detail = new ShotDetailPane(
-                    _shotStore,
-                    new GalleryShotCommands(_shotStore, _libraryOrganization, DispatcherQueue),
+                var gallery = new ShotGalleryGridView(
+                    firstPage,
+                    _shotLibrary,
+                    _shotAssets,
                     _theme);
-                gallery.SelectionChanged += detail.ShowShot;
-                gallery.PreviewRequested += shot => OpenPreview(gallery, shot);
-                detail.PreviewRequested += shot => OpenPreview(gallery, shot);
-                detail.ShotDeleted += deletedShot =>
+                var detail = new ShotDetailPane(
+                    _shotAssets,
+                    _galleryCommands,
+                    _theme);
+                Action<ShotRecord> galleryPreview = shot => OpenPreview(gallery, shot);
+                Action<ShotRecord> detailPreview = shot => OpenPreview(gallery, shot);
+                Action<ShotRecord> shotDeleted = deletedShot =>
                 {
                     var nextGeneration = _navigation.Refresh();
                     _ = LoadShotGalleryAsync(nextGeneration);
                 };
+                gallery.SelectionChanged += detail.ShowShot;
+                gallery.PreviewRequested += galleryPreview;
+                detail.PreviewRequested += detailPreview;
+                detail.ShotDeleted += shotDeleted;
+                candidate.Own(gallery);
+                candidate.Own(detail);
+                candidate.OnDispose(() => gallery.SelectionChanged -= detail.ShowShot);
+                candidate.OnDispose(() => gallery.PreviewRequested -= galleryPreview);
+                candidate.OnDispose(() => detail.PreviewRequested -= detailPreview);
+                candidate.OnDispose(() => detail.ShotDeleted -= shotDeleted);
                 var split = new Grid { ColumnSpacing = 16 };
                 split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 split.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -92,17 +129,24 @@ public sealed partial class MainWindow
             Grid.SetRow(searchAppearance, 2);
             page.Children.Add(searchAppearance);
 
-            DisposeActiveGallery();
-            _contentHost.ShowLibraryBody(page);
-            _activeGallery = nextGallery;
+            _pageOwner.CommitOrDispose(candidate, generation, _navigation.Generation);
+            candidate = null;
         }
         catch (Exception error)
         {
+            candidate?.Dispose();
             if (generation != _navigation.Generation)
                 return;
-            DisposeActiveGallery();
             var failed = MakeCenteredMessage("图库读取失败", error.Message);
-            _contentHost.ShowLibraryBody(failed);
+            _pageOwner.CommitOrDispose(
+                new MainPageLease(
+                    new MainPageIdentity(
+                        MainNavigationPage.Library,
+                        LibrarySection.Shots),
+                    MainPageMount.LibraryBody,
+                    failed),
+                generation,
+                _navigation.Generation);
         }
     }
 
@@ -111,7 +155,13 @@ public sealed partial class MainWindow
         PrepareForNavigation();
         Select(_topButtons, MainNavigationPage.Collections);
         var generation = _navigation.ShowPage(MainNavigationPage.Collections);
-        _contentHost.ShowPage(MakeCenteredMessage("正在读取收藏…", ""));
+        _pageOwner.CommitOrDispose(
+            new MainPageLease(
+                new MainPageIdentity(MainNavigationPage.Collections),
+                MainPageMount.Destination,
+                MakeCenteredMessage("正在读取收藏…", "")),
+            generation,
+            _navigation.Generation);
         _ = LoadCollectionsAsync(generation);
     }
 
@@ -129,8 +179,8 @@ public sealed partial class MainWindow
         if (_previewView is null)
         {
             _previewView = new ShotPreviewView(
-                _shotStore,
                 _shotAssets,
+                _galleryCommands,
                 _recognitionPlugins,
                 _theme,
                 shot);
@@ -202,11 +252,29 @@ public sealed partial class MainWindow
 
     private async void NavigatePreview(int delta)
     {
-        if (_previewGallery is not null)
-            await _previewGallery.MoveSelectionAsync(delta);
+        var gallery = _previewGallery;
+        if (gallery is null)
+            return;
+
+        try
+        {
+            await gallery.MoveSelectionAsync(delta);
+        }
+        catch (OperationCanceledException) when (!ReferenceEquals(_previewGallery, gallery))
+        {
+        }
+        catch (ObjectDisposedException) when (!ReferenceEquals(_previewGallery, gallery))
+        {
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine($"Preview navigation failed: {error}");
+        }
     }
 
-    private void ClosePreview()
+    private void ClosePreview() => ClosePreview(refreshSource: true);
+
+    private void ClosePreview(bool refreshSource)
     {
         var wasActive = _previewView is not null
             && _contentHost.IsOverlayVisible(_previewView);
@@ -224,11 +292,31 @@ public sealed partial class MainWindow
             return;
 
         var returnPage = _navigation.ReturnFromPreview();
-        if (returnPage == MainNavigationPage.Library && _galleryRefreshPending)
+        if (refreshSource
+            && !_isClosing
+            && returnPage == MainNavigationPage.Library
+            && _galleryRefreshPending)
         {
             _galleryRefreshPending = false;
             var generation = _navigation.Refresh();
             _ = LoadShotGalleryAsync(generation);
+        }
+        else if (returnPage == MainNavigationPage.Library)
+        {
+            _galleryRefreshPending = false;
+        }
+
+        if (refreshSource
+            && !_isClosing
+            && returnPage == MainNavigationPage.Apps
+            && _applicationsRefreshPending)
+        {
+            _applicationsRefreshPending = false;
+            _pageOwner.Find<ApplicationsWorkspaceView>()?.Refresh();
+        }
+        else if (returnPage == MainNavigationPage.Apps)
+        {
+            _applicationsRefreshPending = false;
         }
     }
 
@@ -236,9 +324,28 @@ public sealed partial class MainWindow
     {
         try
         {
-            var favorites = await _libraryOrganization.GetFavoriteIdsAsync();
-            var collections = await _libraryOrganization.GetCollectionsAsync();
-            if (generation != _navigation.Generation) return;
+            var state = await _libraryWorkspaceController.LoadCollectionsAsync();
+            if (generation != _navigation.Generation
+                || state.Status == LibraryWorkspaceStatus.Cancelled)
+                return;
+            if (state.Status == LibraryWorkspaceStatus.Error)
+            {
+                _pageOwner.CommitOrDispose(
+                    new MainPageLease(
+                        new MainPageIdentity(MainNavigationPage.Collections),
+                        MainPageMount.Destination,
+                        MakeCenteredMessage(
+                            "收藏读取失败",
+                            state.Error ?? "未知错误")),
+                    generation,
+                    _navigation.Generation);
+                return;
+            }
+            if (state is not { Status: LibraryWorkspaceStatus.Collections, Collections: { } snapshot })
+                return;
+
+            var favorites = snapshot.FavoriteShotIds;
+            var collections = snapshot.Collections;
 
             var root = new StackPanel { Spacing = 18 };
             root.Children.Add(new TextBlock
@@ -271,16 +378,28 @@ public sealed partial class MainWindow
             }
             root.Children.Add(cards);
 
-            _contentHost.ShowPage(new ScrollViewer
-            {
-                Content = root,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-            });
+            _pageOwner.CommitOrDispose(
+                new MainPageLease(
+                    new MainPageIdentity(MainNavigationPage.Collections),
+                    MainPageMount.Destination,
+                    new ScrollViewer
+                    {
+                        Content = root,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+                    }),
+                generation,
+                _navigation.Generation);
         }
         catch (Exception error)
         {
             if (generation != _navigation.Generation) return;
-            _contentHost.ShowPage(MakeCenteredMessage("收藏读取失败", error.Message));
+            _pageOwner.CommitOrDispose(
+                new MainPageLease(
+                    new MainPageIdentity(MainNavigationPage.Collections),
+                    MainPageMount.Destination,
+                    MakeCenteredMessage("收藏读取失败", error.Message)),
+                generation,
+                _navigation.Generation);
         }
     }
 

@@ -2,6 +2,7 @@ using Index.Clipboard;
 using Index.Platform.Clipboard;
 using Index.UI.Clipboard;
 using Microsoft.UI.Dispatching;
+using Index.Platform.Diagnostics;
 
 namespace Index.App;
 
@@ -14,17 +15,20 @@ public sealed class ClipboardPopupModule
     private readonly IClipboardHistoryStore? _store;
     private readonly IClipboardWriter _writer;
     private readonly IClipboardPasteTarget? _pasteTarget;
+    private readonly IAppDiagnostics _diagnostics;
     private ClipboardPopupWindow? _window;
 
     public ClipboardPopupModule(
         IClipboardHistorySource source,
         IClipboardWriter writer,
-        IClipboardPasteTarget? pasteTarget = null)
+        IClipboardPasteTarget? pasteTarget = null,
+        IAppDiagnostics? diagnostics = null)
     {
         _source = source;
         _store = source as IClipboardHistoryStore;
         _writer = writer;
         _pasteTarget = pasteTarget;
+        _diagnostics = diagnostics ?? NullAppDiagnostics.Instance;
     }
 
     public static ClipboardPopupModule CreateDemo()
@@ -120,17 +124,9 @@ public sealed class ClipboardPopupModule
         }
     }
 
-    private static void LogPopupFailure(Exception error)
-    {
-        try
-        {
-            Directory.CreateDirectory(@"C:\temp");
-            File.AppendAllText(
-                @"C:\temp\index_clipboard_popup_error.log",
-                $"[{DateTime.Now:O}] {error}{Environment.NewLine}");
-        }
-        catch
-        {
-        }
-    }
+    private void LogPopupFailure(Exception error) => _diagnostics.Write(
+        AppDiagnosticLevel.Error,
+        "clipboard.popup",
+        "popup-failed",
+        exception: error);
 }

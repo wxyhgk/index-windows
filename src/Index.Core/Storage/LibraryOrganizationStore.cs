@@ -13,11 +13,21 @@ public sealed record ShotCollectionRecord(
     int SortOrder,
     int ItemCount);
 
+public interface ILibraryOrganizationSource
+{
+    Task<IReadOnlySet<long>> GetFavoriteIdsAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<ShotCollectionRecord>> GetCollectionsAsync(
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// Persists user-owned library organization independently from gallery UI state.
 /// Favorites and tags are attributes; collections are many-to-many references to shots.
 /// </summary>
 public sealed class LibraryOrganizationStore
+    : ILibraryOrganizationSource, IShotOrganizationRepository
 {
     private const string FavoriteKey = "favorite";
     private const string TagKey = "tag";
@@ -88,6 +98,25 @@ public sealed class LibraryOrganizationStore
         while (await reader.ReadAsync(cancellationToken))
             result.Add(reader.GetInt64(0));
         return result;
+    }
+
+    public async Task<bool> IsFavoriteAsync(
+        long shotId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _database.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS(
+                SELECT 1 FROM shotAttribute
+                WHERE shotID = $shotID AND key = $key
+            )
+            """;
+        command.Parameters.AddWithValue("$shotID", shotId);
+        command.Parameters.AddWithValue("$key", FavoriteKey);
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken),
+            CultureInfo.InvariantCulture) != 0;
     }
 
     public async Task AddTagAsync(

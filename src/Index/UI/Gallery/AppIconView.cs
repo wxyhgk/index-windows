@@ -28,11 +28,13 @@ internal sealed class AppIconView : UserControl, IDisposable
         Content = _canvas;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs args) => BeginLoad();
+    private void OnLoaded(object sender, RoutedEventArgs args) => StartLoad();
 
     private void OnUnloaded(object sender, RoutedEventArgs args) => ReleaseResources();
 
-    private async void BeginLoad()
+    private void StartLoad() => _ = LoadAsync();
+
+    private async Task LoadAsync()
     {
         if (_disposed || _cancellation is not null) return;
         var cancellation = new CancellationTokenSource();
@@ -49,6 +51,10 @@ internal sealed class AppIconView : UserControl, IDisposable
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine($"Application icon load failed: {error}");
         }
     }
 

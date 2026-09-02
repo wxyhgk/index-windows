@@ -8,7 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 namespace Index.UI.Settings;
 
 /// <summary>Embeddable settings panel for the Windows global shortcuts.</summary>
-public sealed class ShortcutSettingsView : UserControl
+public sealed class ShortcutSettingsView : UserControl, IDisposable
 {
     private readonly IShortcutSettingsStore _store;
     private readonly VirtualDisplayCaptureWorkflow _virtualDisplayCapture;
@@ -23,6 +23,7 @@ public sealed class ShortcutSettingsView : UserControl
     private readonly ToggleSwitch _automatic4KCapture;
     private CancellationTokenSource? _virtualCaptureCancellation;
     private bool _refreshingControls;
+    private bool _disposed;
 
     public ShortcutSettingsView(
         IShortcutSettingsStore store,
@@ -157,9 +158,15 @@ public sealed class ShortcutSettingsView : UserControl
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Top
         };
-        Loaded += (_, _) => RefreshVirtualDisplayStatus();
-        Unloaded += (_, _) => CancelVirtualCapture();
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
+
+    private void OnLoaded(object sender, RoutedEventArgs args)
+        => RefreshVirtualDisplayStatus();
+
+    private void OnUnloaded(object sender, RoutedEventArgs args)
+        => CancelVirtualCapture();
 
     private static Grid MakeRow(string title, string description, FrameworkElement recorder)
     {
@@ -257,6 +264,9 @@ public sealed class ShortcutSettingsView : UserControl
 
     private async void OnVirtualCaptureClicked(object sender, RoutedEventArgs args)
     {
+        if (_disposed)
+            return;
+
         CancelVirtualCapture();
         var cancellation = new CancellationTokenSource();
         var cancellationToken = cancellation.Token;
@@ -289,6 +299,8 @@ public sealed class ShortcutSettingsView : UserControl
             {
                 await TryRunOnUiAsync(() =>
                 {
+                    if (_disposed)
+                        return;
                     if (finalMessage is not null)
                         _virtualDisplayStatus.Text = finalMessage;
                     try
@@ -369,5 +381,17 @@ public sealed class ShortcutSettingsView : UserControl
         catch
         {
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        Loaded -= OnLoaded;
+        Unloaded -= OnUnloaded;
+        _virtualCaptureButton.Click -= OnVirtualCaptureClicked;
+        CancelVirtualCapture();
     }
 }

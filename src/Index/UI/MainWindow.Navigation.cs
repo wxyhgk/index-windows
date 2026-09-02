@@ -12,32 +12,36 @@ namespace Index.UI;
 
 public sealed partial class MainWindow
 {
-    private void AddTopTab(Panel host, MainNavigationPage page, string title)
+    private void AddTopTabs(Panel host)
     {
-        var button = MakeButton(title);
-        button.Click += (_, _) =>
+        var handlers = new Dictionary<MainNavigationPage, Action>
         {
-            Select(_topButtons, page);
-            switch (page)
-            {
-                case MainNavigationPage.Library:
-                    ShowLibrary();
-                    break;
-                case MainNavigationPage.Settings:
-                    ShowShortcutSettings();
-                    break;
-                case MainNavigationPage.Collections:
-                    ShowCollections();
-                    break;
-                case MainNavigationPage.Apps:
-                    ShowApplications();
-                    break;
-                default:
-                    ShowSimplePage(page, title, "按来源应用浏览截图");
-                    break;
-            }
+            [MainNavigationPage.Library] = ShowLibrary,
+            [MainNavigationPage.Collections] = ShowCollections,
+            [MainNavigationPage.Apps] = ShowApplications,
+            [MainNavigationPage.Settings] = ShowShortcutSettings
         };
-        _topButtons[page] = button;
+
+        foreach (var destination in _topDestinations.Destinations)
+        {
+            if (!handlers.TryGetValue(destination.Page, out var navigate))
+            {
+                throw new InvalidOperationException(
+                    $"Top-level destination '{destination.Id}' has no UI handler.");
+            }
+
+            AddTopTab(host, destination, navigate);
+        }
+    }
+
+    private void AddTopTab(
+        Panel host,
+        MainNavigationDestination destination,
+        Action navigate)
+    {
+        var button = MakeButton(destination.Title);
+        button.Click += (_, _) => navigate();
+        _topButtons[destination.Page] = button;
         host.Children.Add(button);
     }
 
@@ -79,30 +83,47 @@ public sealed partial class MainWindow
         string title,
         string description)
     {
-        DisposeActiveGallery();
+        _libraryWorkspaceController.CancelCurrent();
         Select(_subButtons, section);
         var generation = _navigation.ShowLibrary(section);
 
         if (section == LibrarySection.Shots)
         {
             var loading = MakeCenteredMessage("正在读取图库…", "");
-            _contentHost.ShowLibraryBody(loading);
+            _pageOwner.CommitOrDispose(
+                new MainPageLease(
+                    new MainPageIdentity(MainNavigationPage.Library, section),
+                    MainPageMount.LibraryBody,
+                    loading),
+                generation,
+                _navigation.Generation);
             _ = LoadShotGalleryAsync(generation);
             return;
         }
 
         if (section == LibrarySection.Clipboard)
         {
-            var clipboard = new ClipboardLibraryView(
+            var clipboardView = new ClipboardLibraryView(
                 _clipboardHistory,
                 _clipboardWriter,
                 _theme);
-            _contentHost.ShowLibraryBody(clipboard);
+            var lease = new MainPageLease(
+                new MainPageIdentity(MainNavigationPage.Library, section),
+                MainPageMount.LibraryBody,
+                clipboardView);
+            lease.Own(clipboardView);
+            _pageOwner.CommitOrDispose(lease, generation, _navigation.Generation);
             return;
         }
 
         var body = MakeCenteredMessage(title, description);
-        _contentHost.ShowLibraryBody(body);
+        _pageOwner.CommitOrDispose(
+            new MainPageLease(
+                new MainPageIdentity(MainNavigationPage.Library, section),
+                MainPageMount.LibraryBody,
+                body),
+            generation,
+            _navigation.Generation);
     }
 
     private void ShowUnifiedSearch()
@@ -110,51 +131,37 @@ public sealed partial class MainWindow
         PrepareForNavigation();
         _navigation.ShowPage(MainNavigationPage.Search);
         Select(_topButtons, MainNavigationPage.Search);
-        _searchView = new UnifiedSearchView(
+        var searchView = new UnifiedSearchView(
             _unifiedSearch,
             _shotAssets,
             _clipboardWriter,
             _theme);
-        _contentHost.ShowPage(_searchView);
-    }
-
-    private void CloseSearch()
-    {
-        _searchView?.Dispose();
-        _searchView = null;
-    }
-
-    private void ShowSimplePage(
-        MainNavigationPage page,
-        string title,
-        string description)
-    {
-        PrepareForNavigation();
-        _navigation.ShowPage(page);
-        _contentHost.ShowPage(new StackPanel
-        {
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 10,
-            Children =
-            {
-                new TextBlock { Text = title, FontSize = 30, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = _theme.Text, HorizontalAlignment = HorizontalAlignment.Center },
-                new TextBlock { Text = description, FontSize = 14, Foreground = _theme.Muted, HorizontalAlignment = HorizontalAlignment.Center }
-            }
-        });
+        var lease = new MainPageLease(
+            new MainPageIdentity(MainNavigationPage.Search),
+            MainPageMount.Destination,
+            searchView);
+        lease.Own(searchView);
+        _pageOwner.CommitOrDispose(lease, _navigation.Generation, _navigation.Generation);
     }
 
     private void ShowShortcutSettings()
     {
         PrepareForNavigation();
         _navigation.ShowPage(MainNavigationPage.Settings);
-        _contentHost.ShowPage(new ShortcutSettingsView(
+        Select(_topButtons, MainNavigationPage.Settings);
+        var settingsView = new ShortcutSettingsView(
             _shortcutSettings,
             _virtualDisplayCapture)
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
-        });
+        };
+        var lease = new MainPageLease(
+            new MainPageIdentity(MainNavigationPage.Settings),
+            MainPageMount.Destination,
+            settingsView);
+        lease.Own(settingsView);
+        _pageOwner.CommitOrDispose(lease, _navigation.Generation, _navigation.Generation);
     }
 
     private void ShowApplications()
@@ -162,14 +169,25 @@ public sealed partial class MainWindow
         PrepareForNavigation();
         Select(_topButtons, MainNavigationPage.Apps);
         _navigation.ShowPage(MainNavigationPage.Apps);
-        _applicationsView = new ApplicationsWorkspaceView(
-            _shotStore,
-            _libraryOrganization,
+        var applicationsView = new ApplicationsWorkspaceView(
+            _applicationsWorkspaceControllers.Create(),
             _shotAssets,
+            _galleryCommands,
             _theme);
-        _applicationsView.PreviewRequested += OpenPreview;
-        _contentHost.ShowPage(_applicationsView);
-        _applicationsView.Start();
+        applicationsView.PreviewRequested += OpenPreview;
+        var lease = new MainPageLease(
+            new MainPageIdentity(MainNavigationPage.Apps),
+            MainPageMount.Destination,
+            applicationsView);
+        lease.Own(applicationsView);
+        lease.OnDispose(() => applicationsView.PreviewRequested -= OpenPreview);
+        if (_pageOwner.CommitOrDispose(
+                lease,
+                _navigation.Generation,
+                _navigation.Generation))
+        {
+            applicationsView.Start();
+        }
     }
 
     public void ShowLibraryPage()
@@ -180,19 +198,8 @@ public sealed partial class MainWindow
 
     private void PrepareForNavigation()
     {
-        ClosePreview();
-        CloseSearch();
-        DisposeActiveGallery();
-        DisposeApplicationsWorkspace();
-    }
-
-    private void DisposeApplicationsWorkspace()
-    {
-        if (_applicationsView is null)
-            return;
-        _applicationsView.PreviewRequested -= OpenPreview;
-        _applicationsView.Dispose();
-        _applicationsView = null;
+        _libraryWorkspaceController.CancelCurrent();
+        ClosePreview(refreshSource: false);
     }
 
     private Button MakeButton(string title, bool compact = false) => new()

@@ -2,6 +2,7 @@ using Index.Capture;
 using Index.Platform;
 using Microsoft.UI.Xaml;
 using System.Runtime.InteropServices;
+using Index.Platform.Diagnostics;
 
 namespace Index.UI.Editor;
 
@@ -28,7 +29,8 @@ public sealed class SelectionOverlaySession : IDisposable
 
     public SelectionOverlaySession(
         IReadOnlyList<DisplaySnapshot> snapshots,
-        IReadOnlyList<SourceWindowInfo> windows)
+        IReadOnlyList<SourceWindowInfo> windows,
+        IAppDiagnostics diagnostics)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
         if (snapshots.Count == 0)
@@ -39,7 +41,7 @@ public sealed class SelectionOverlaySession : IDisposable
         _state = new SelectionOverlaySessionState(snapshots.Select(snapshot => snapshot.DisplayId));
         foreach (var snapshot in snapshots)
         {
-            var window = new OverlayWindow();
+            var window = new OverlayWindow(diagnostics);
             window.CloseOnCapture = false;
             var targets = WindowSelectionTargetMapper.Create(
                 snapshot,

@@ -20,8 +20,8 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
 
     private readonly ObservableCollection<ShotRow> _rows = [];
     private readonly List<ShotRecord> _loadedShots = [];
-    private readonly ShotStore _store;
     private readonly IShotPageSource _pageSource;
+    private readonly IShotAssetReader _assets;
     private readonly GalleryTheme _theme;
     private readonly ScrollViewer _scrollViewer;
     private readonly ItemsRepeater _repeater;
@@ -39,13 +39,13 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
 
     public ShotGalleryGridView(
         ShotPage firstPage,
-        ShotStore store,
-        GalleryTheme theme,
-        IShotPageSource? pageSource = null)
+        IShotPageSource pageSource,
+        IShotAssetReader assets,
+        GalleryTheme theme)
     {
         _nextCursor = firstPage.NextCursor;
-        _store = store;
-        _pageSource = pageSource ?? store;
+        _pageSource = pageSource ?? throw new ArgumentNullException(nameof(pageSource));
+        _assets = assets ?? throw new ArgumentNullException(nameof(assets));
         _theme = theme;
         AppendRows(firstPage.Items);
         _resizeTimer = DispatcherQueue.CreateTimer();
@@ -125,6 +125,10 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
         catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
         {
         }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine($"Gallery page load failed: {error}");
+        }
         finally
         {
             _isLoadingPage = false;
@@ -138,9 +142,7 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
             CardAppearance.ForShot(shot),
             _theme,
             ThumbnailHeight,
-            _store.ThumbnailPath(shot),
-            _store.LegacyThumbnailPath(shot),
-            _store.OriginalPath(shot))
+            _assets)
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             IsSelected = shot.Id == _selectedId
@@ -151,7 +153,6 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
         card.SetThumbnailLoadingEnabled(_thumbnailLoadingEnabled);
         _realizedCards[shot.Id] = card;
         _allCards.Add(card);
-        _ = EnsureLosslessThumbnailAsync(shot, card);
         return card;
     }
 
@@ -190,49 +191,12 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
             _realizedCards.Remove(card.Shot.Id);
         card.Bind(
             shot,
-            CardAppearance.ForShot(shot),
-            _store.ThumbnailPath(shot),
-            _store.LegacyThumbnailPath(shot),
-            _store.OriginalPath(shot));
+            CardAppearance.ForShot(shot));
         card.SetResponsiveWidth(_responsiveCardWidth);
         card.SetThumbnailLoadingEnabled(_thumbnailLoadingEnabled);
         card.IsSelected = shot.Id == _selectedId;
         card.Visibility = Visibility.Visible;
         _realizedCards[shot.Id] = card;
-        _ = EnsureLosslessThumbnailAsync(shot, card);
-    }
-
-    private async Task EnsureLosslessThumbnailAsync(ShotRecord shot, ShotCardView card)
-    {
-        try
-        {
-            if (!await _store.EnsureLosslessThumbnailAsync(
-                    shot,
-                    _lifetimeCancellation.Token))
-                return;
-
-            if (!DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (!_disposed && card.Shot.Id == shot.Id)
-                    {
-                        card.SetThumbnailPaths(
-                            _store.ThumbnailPath(shot),
-                            _store.LegacyThumbnailPath(shot),
-                            _store.OriginalPath(shot));
-                    }
-                }))
-            {
-                return;
-            }
-        }
-        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            System.Diagnostics.Debug.WriteLine(
-                $"Lossless thumbnail migration failed for shot {shot.Id}: {error.Message}");
-        }
     }
 
     private void UnrealizeCard(ShotCardView card)
@@ -300,7 +264,17 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
         if (delta == 0)
             return;
         e.Handled = true;
-        await MoveSelectionAsync(delta);
+        try
+        {
+            await MoveSelectionAsync(delta);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine($"Gallery keyboard navigation failed: {error}");
+        }
     }
 
     public async Task<ShotRecord?> MoveSelectionAsync(int delta)

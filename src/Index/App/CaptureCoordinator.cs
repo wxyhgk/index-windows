@@ -4,6 +4,7 @@ using Index.Capture;
 using Index.UI.Editor;
 using Index.Toolbar;
 using Index.Settings;
+using Index.Platform.Diagnostics;
 using Microsoft.UI.Dispatching;
 using System.Diagnostics;
 
@@ -20,22 +21,17 @@ public sealed class CaptureCoordinator
     private readonly CaptureActionExecutor _actionExecutor;
     private readonly ISourceApplicationResolver _sourceApplicationResolver;
     private readonly IWindowSurfaceCapture _windowSurfaceCapture;
-    private readonly IVirtualWindowFrameSource _virtualWindowFrameSource;
+    private readonly HighResolutionCaptureOrchestrator _highResolutionCapture;
     private readonly ICaptureImagePreparer _imagePreparer;
     private readonly ICapturePersistenceService _persistenceService;
     private readonly CaptureActionContextFactory _actionContextFactory;
     private readonly IShortcutSettingsStore _settingsStore;
+    private readonly IAppDiagnostics _diagnostics;
+    private readonly CaptureSessionGate _captureSessionGate = new();
+    private readonly CaptureTransitionTaskTracker _highResolutionTransitions = new();
     private DispatcherQueue? _uiDispatcher;
     private CaptureOverlaySessionController? _activeOverlaySession;
-    private int _captureInProgress;
-    private int _highResolutionTransitionInProgress;
-
-    private static readonly string LogPath = @"C:\temp\index_capture.log";
-
-    private static void Log(string msg)
-    {
-        try { File.AppendAllText(LogPath, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}{Environment.NewLine}"); } catch { }
-    }
+    private CancellationTokenSource? _highResolutionCancellation;
 
     public CaptureCoordinator(
         CaptureSource captureSource,
@@ -43,11 +39,12 @@ public sealed class CaptureCoordinator
         CaptureActionExecutor actionExecutor,
         ISourceApplicationResolver sourceApplicationResolver,
         IWindowSurfaceCapture windowSurfaceCapture,
-        IVirtualWindowFrameSource virtualWindowFrameSource,
+        HighResolutionCaptureOrchestrator highResolutionCapture,
         ICaptureImagePreparer imagePreparer,
         ICapturePersistenceService persistenceService,
         CaptureActionContextFactory actionContextFactory,
-        IShortcutSettingsStore settingsStore)
+        IShortcutSettingsStore settingsStore,
+        IAppDiagnostics diagnostics)
     {
         _captureSource = captureSource ?? throw new ArgumentNullException(nameof(captureSource));
         _displayTopologyProvider = displayTopologyProvider
@@ -57,8 +54,8 @@ public sealed class CaptureCoordinator
             ?? throw new ArgumentNullException(nameof(sourceApplicationResolver));
         _windowSurfaceCapture = windowSurfaceCapture
             ?? throw new ArgumentNullException(nameof(windowSurfaceCapture));
-        _virtualWindowFrameSource = virtualWindowFrameSource
-            ?? throw new ArgumentNullException(nameof(virtualWindowFrameSource));
+        _highResolutionCapture = highResolutionCapture
+            ?? throw new ArgumentNullException(nameof(highResolutionCapture));
         _imagePreparer = imagePreparer
             ?? throw new ArgumentNullException(nameof(imagePreparer));
         _persistenceService = persistenceService
@@ -66,6 +63,47 @@ public sealed class CaptureCoordinator
         _actionContextFactory = actionContextFactory
             ?? throw new ArgumentNullException(nameof(actionContextFactory));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
+    }
+
+    private void Log(string message)
+        => QueueDiagnostic(
+            AppDiagnosticLevel.Trace,
+            "capture-trace",
+            new Dictionary<string, string?> { ["message"] = message });
+
+    private void LogFailure(
+        string eventName,
+        Exception error,
+        IReadOnlyDictionary<string, string?>? properties = null)
+        => QueueDiagnostic(
+            AppDiagnosticLevel.Error,
+            eventName,
+            properties,
+            error);
+
+    private void QueueDiagnostic(
+        AppDiagnosticLevel level,
+        string eventName,
+        IReadOnlyDictionary<string, string?>? properties,
+        Exception? exception = null)
+    {
+        var diagnostics = _diagnostics;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                diagnostics.Write(
+                    level,
+                    "capture",
+                    eventName,
+                    properties,
+                    exception);
+            }
+            catch
+            {
+            }
+        });
     }
 
     /// <summary>在 UI 线程调用，保存 dispatcher 供后续调度回 UI 线程创建 Window。</summary>
@@ -74,10 +112,25 @@ public sealed class CaptureCoordinator
         _uiDispatcher = DispatcherQueue.GetForCurrentThread();
     }
 
+    public CaptureShutdownWork BeginShutdown()
+    {
+        _captureSessionGate.Shutdown();
+        var restoration = _highResolutionTransitions.CloseAndGetCurrent();
+        _activeOverlaySession?.Cancel();
+        ReleaseHighResolutionCancellation(cancel: true);
+
+        return new CaptureShutdownWork(
+            "overlay-high-resolution",
+            restoration);
+    }
+
     public async Task BeginCaptureAsync(string source = "unknown")
     {
-        if (Interlocked.CompareExchange(ref _captureInProgress, 1, 0) != 0)
+        if (!_captureSessionGate.TryBeginCapture())
         {
+            if (_captureSessionGate.IsShutdown)
+                return;
+
             Log($"BeginCapture ({source}) requested while another capture is active");
             RecoverOrReactivateOverlay(source);
             return;
@@ -102,7 +155,7 @@ public sealed class CaptureCoordinator
         }
         catch (Exception ex)
         {
-            Log($"Capture failed: {ex}");
+            LogFailure("capture-failed", ex);
             EndCaptureSession();
         }
     }
@@ -119,7 +172,7 @@ public sealed class CaptureCoordinator
             }
 
             if (session is null
-                && Volatile.Read(ref _highResolutionTransitionInProgress) != 0)
+                && _captureSessionGate.IsHighResolutionTransition)
             {
                 Log("capture hotkey ignored while the 4K frame is being prepared");
                 return;
@@ -181,7 +234,8 @@ public sealed class CaptureCoordinator
 
             var session = new SelectionOverlaySession(
                 snapshots,
-                sourceSnapshot.Windows);
+                sourceSnapshot.Windows,
+                _diagnostics);
             var overlayDispatcher = DispatcherQueue.GetForCurrentThread()
                 ?? _uiDispatcher
                 ?? throw new InvalidOperationException("Overlay creation requires a UI dispatcher.");
@@ -204,7 +258,7 @@ public sealed class CaptureCoordinator
         }
         catch (Exception ex)
         {
-            Log($"Overlay failed: {ex}");
+            LogFailure("overlay-failed", ex);
             var activeSession = _activeOverlaySession;
             if (activeSession is null)
                 EndCaptureSession();
@@ -248,7 +302,7 @@ public sealed class CaptureCoordinator
         catch (Exception error)
         {
             // Pixel snapping is optional. Window snapping and manual selection remain usable.
-            Log($"pixel-edge preparation failed: {error.Message}");
+            LogFailure("pixel-edge-preparation-failed", error);
         }
     }
 
@@ -262,14 +316,30 @@ public sealed class CaptureCoordinator
     {
         if (ShouldUseHighResolution(result.Decision))
         {
-            Interlocked.Exchange(ref _highResolutionTransitionInProgress, 1);
+            if (!_captureSessionGate.TryBeginHighResolutionTransition())
+            {
+                Log("4K transition rejected because the capture session is no longer active");
+                return new CaptureOverlayDecisionHandling(
+                    DeferReleaseUntilCompleted: false,
+                    ContinueCaptureAfterRelease: false,
+                    () => Task.CompletedTask);
+            }
+
+            var cancellation = new CancellationTokenSource();
+            var previousCancellation = Interlocked.Exchange(
+                ref _highResolutionCancellation,
+                cancellation);
+            previousCancellation?.Cancel();
+            previousCancellation?.Dispose();
+            var cancellationToken = cancellation.Token;
             return new CaptureOverlayDecisionHandling(
                 DeferReleaseUntilCompleted: false,
                 ContinueCaptureAfterRelease: true,
-                () => ExecuteHighResolutionTransitionAsync(
+                () => TrackHighResolutionTransition(
                     result.Decision,
                     snapshots,
-                    sourceSnapshot));
+                    sourceSnapshot,
+                    cancellationToken));
         }
 
         if (result.Decision.ActionId == CaptureActionIds.Pin)
@@ -287,6 +357,29 @@ public sealed class CaptureCoordinator
             DeferReleaseUntilCompleted: false,
             ContinueCaptureAfterRelease: false,
             () => ExecuteDecisionAsync(result.Decision, snapshots, sourceSnapshot));
+    }
+
+    private Task TrackHighResolutionTransition(
+        CaptureDecision decision,
+        IReadOnlyList<DisplaySnapshot> frozenSnapshots,
+        SourceApplicationSnapshot sourceSnapshot,
+        CancellationToken cancellationToken)
+    {
+        if (_highResolutionTransitions.TryTrack(
+                () => ObserveHighResolutionTransitionAsync(
+                    decision,
+                    frozenSnapshots,
+                    sourceSnapshot,
+                    cancellationToken),
+                out var transition))
+        {
+            return transition;
+        }
+
+        // Shutdown may close the tracker after the overlay decision was routed but before its
+        // deferred callback runs. Do not start a new display/window mutation after that point.
+        ReleaseHighResolutionCancellation(cancel: true);
+        return Task.CompletedTask;
     }
 
     private bool ShouldUseHighResolution(CaptureDecision decision)
@@ -313,108 +406,105 @@ public sealed class CaptureCoordinator
             EndCaptureSession();
     }
 
-    private async Task ExecuteHighResolutionTransitionAsync(
+    private async Task ObserveHighResolutionTransitionAsync(
         CaptureDecision decision,
         IReadOnlyList<DisplaySnapshot> frozenSnapshots,
-        SourceApplicationSnapshot sourceSnapshot)
+        SourceApplicationSnapshot sourceSnapshot,
+        CancellationToken cancellationToken)
     {
         try
         {
-            if (decision.TargetWindowHandle == nint.Zero)
-                throw new InvalidOperationException("4K 截图需要框选一个可捕获的窗口。");
-
-            var frozenDisplay = CaptureDecisionBinding.ResolveSnapshot(
+            await ExecuteHighResolutionTransitionAsync(
                 decision,
-                frozenSnapshots);
-            var requestedGlobalBounds = new SourceWindowBounds(
-                frozenDisplay.Left + decision.Selection.X,
-                frozenDisplay.Top + decision.Selection.Y,
-                frozenDisplay.Left + decision.Selection.X + decision.Selection.Width,
-                frozenDisplay.Top + decision.Selection.Y + decision.Selection.Height);
-            var targetWindow = sourceSnapshot.Windows.FirstOrDefault(window =>
-                window.IsTopLevel
-                && window.Handle == decision.TargetWindowHandle);
-            Log(targetWindow is null
-                ? $"4K target: hwnd=0x{decision.TargetWindowHandle:X}, selection={requestedGlobalBounds}, " +
-                  "frozen window metadata missing"
-                : $"4K target: hwnd=0x{decision.TargetWindowHandle:X}, pid={targetWindow.ProcessId}, " +
-                  $"title={targetWindow.WindowTitle}, bounds={targetWindow.Bounds}, " +
-                  $"selection={requestedGlobalBounds}");
-            if (targetWindow is null)
-                throw new InvalidOperationException("The frozen 4K window identity is missing.");
-            var frame = await Task.Run(() =>
-                _virtualWindowFrameSource.CaptureAsync(
-                    new VirtualWindowCaptureTarget(
-                        targetWindow.Handle,
-                        targetWindow.ProcessId,
-                        targetWindow.Bounds)))
-                .ConfigureAwait(false);
-            var display = frame.Display;
-            var mapping = HighResolutionCaptureGeometry.MapFromOriginalWindow(
-                requestedGlobalBounds,
-                frame.OriginalWindowBounds,
-                display.Width,
-                display.Height);
-            var imageBounds = mapping.ImageBounds;
-            var highResolutionSelection = new CaptureSelection
-            {
-                Display = CaptureDecisionBinding.IdentityOf(display),
-                X = imageBounds.Left,
-                Y = imageBounds.Top,
-                Width = imageBounds.Width,
-                Height = imageBounds.Height,
-                Layers = HighResolutionCaptureGeometry.MapLayersFromOriginalSelection(
-                    decision.Selection.Layers,
-                    requestedGlobalBounds,
-                    mapping)
-            };
-            var prepared = await Task.Run(() =>
-                _imagePreparer.PrepareFrozen(highResolutionSelection, display.PngData))
-                .ConfigureAwait(false);
-            var capturedAt = DateTimeOffset.Now;
-            var stored = await _persistenceService.SaveAsync(
-                new CapturePersistenceRequest(
-                    prepared,
-                    highResolutionSelection,
-                    display,
-                    mapping.GlobalBounds,
-                    sourceSnapshot,
-                    capturedAt)).ConfigureAwait(false);
-            string outputActionId = decision.ActionId == ToolbarCommandIds.HighResolution4K
-                ? CaptureActionIds.Complete
-                : decision.ActionId;
-            var execution = await _actionExecutor.ExecuteAsync(
-                outputActionId,
-                _actionContextFactory.Create(
-                    prepared,
-                    new CaptureRegion(
-                        mapping.GlobalBounds.Left,
-                        mapping.GlobalBounds.Top,
-                        highResolutionSelection.Width,
-                        highResolutionSelection.Height),
-                    capturedAt)).ConfigureAwait(false);
-            if (!execution.IsSuccess)
-                Log($"4K completion ended: {execution.Status}, {execution.Error}");
-            Log($"4K shot stored directly: id={stored.Shot.Id}, sha={stored.Shot.Sha256}, " +
-                $"size={highResolutionSelection.Width}x{highResolutionSelection.Height}");
+                frozenSnapshots,
+                sourceSnapshot,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Log("4K transition canceled before a structured outcome was returned");
             EndCaptureSession();
         }
         catch (Exception error)
         {
-            Log($"4K transition failed: {error}");
-            if (decision.ActionId != ToolbarCommandIds.HighResolution4K)
+            // Non-deferred overlay work is launched after the overlay is released. Observe every
+            // unexpected failure here so it cannot fault silently and leave the session gate held.
+            LogFailure("high-resolution-transition-failed", error);
+            EndCaptureSession();
+        }
+    }
+
+    private async Task ExecuteHighResolutionTransitionAsync(
+        CaptureDecision decision,
+        IReadOnlyList<DisplaySnapshot> frozenSnapshots,
+        SourceApplicationSnapshot sourceSnapshot,
+        CancellationToken cancellationToken)
+    {
+        var mode = decision.ActionId == ToolbarCommandIds.HighResolution4K
+            ? HighResolutionCaptureMode.Explicit
+            : HighResolutionCaptureMode.Automatic;
+        var outcome = await _highResolutionCapture.ExecuteAsync(
+            new HighResolutionCaptureRequest(
+                decision,
+                frozenSnapshots,
+                sourceSnapshot,
+                mode),
+            cancellationToken).ConfigureAwait(false);
+
+        if (outcome.IsStored)
+        {
+            if (outcome.ActionExecution is { IsSuccess: false } action)
             {
+                if (action.Error is { } actionError)
+                {
+                    LogFailure(
+                        "high-resolution-action-failed",
+                        actionError,
+                        new Dictionary<string, string?>
+                        {
+                            ["status"] = action.Status.ToString()
+                        });
+                }
+                else
+                {
+                    Log($"4K completion ended: {action.Status}");
+                }
+            }
+            if (outcome.StoredCapture is { } stored)
+            {
+                Log($"4K shot stored directly: id={stored.Shot.Id}, sha={stored.Shot.Sha256}, " +
+                    $"size={outcome.Width}x{outcome.Height}");
+            }
+        }
+        else if (outcome.Error is { } error)
+        {
+            LogFailure(
+                "high-resolution-transition-ended-with-error",
+                error,
+                new Dictionary<string, string?>
+                {
+                    ["status"] = outcome.Status.ToString()
+                });
+        }
+
+        switch (outcome.Continuation)
+        {
+            case HighResolutionCaptureContinuation.ExecuteFrozenDecision:
                 Log("automatic 4K failed; falling back to the original frozen selection");
                 await ExecuteDecisionAsync(
                     decision,
                     frozenSnapshots,
                     sourceSnapshot).ConfigureAwait(false);
                 EndCaptureSession();
-                return;
-            }
-            ReopenFrozenOverlayAfterHighResolutionFailure(
-                frozenSnapshots,
-                sourceSnapshot);
+                break;
+            case HighResolutionCaptureContinuation.ResumeFrozenSelection:
+                ReopenFrozenOverlayAfterHighResolutionFailure(
+                    frozenSnapshots,
+                    sourceSnapshot);
+                break;
+            default:
+                EndCaptureSession();
+                break;
         }
     }
 
@@ -422,11 +512,26 @@ public sealed class CaptureCoordinator
         IReadOnlyList<DisplaySnapshot> frozenSnapshots,
         SourceApplicationSnapshot sourceSnapshot)
     {
+        if (_captureSessionGate.IsShutdown)
+        {
+            EndCaptureSession();
+            return;
+        }
         var dispatcher = _uiDispatcher;
         if (dispatcher is null
             || !dispatcher.TryEnqueue(() =>
             {
-                Interlocked.Exchange(ref _highResolutionTransitionInProgress, 0);
+                if (_captureSessionGate.IsShutdown)
+                {
+                    EndCaptureSession();
+                    return;
+                }
+                ReleaseHighResolutionCancellation(cancel: false);
+                if (!_captureSessionGate.TryResumeCaptureAfterHighResolutionFailure())
+                {
+                    EndCaptureSession();
+                    return;
+                }
                 CreateOverlay(
                     frozenSnapshots,
                     sourceSnapshot,
@@ -476,7 +581,20 @@ public sealed class CaptureCoordinator
                     capturedAt));
             if (!execution.IsSuccess)
             {
-                Log($"pin action ended: {execution.Status}, {execution.Error}");
+                if (execution.Error is { } executionError)
+                {
+                    LogFailure(
+                        "pin-action-failed",
+                        executionError,
+                        new Dictionary<string, string?>
+                        {
+                            ["status"] = execution.Status.ToString()
+                        });
+                }
+                else
+                {
+                    Log($"pin action ended: {execution.Status}");
+                }
                 return;
             }
 
@@ -484,7 +602,7 @@ public sealed class CaptureCoordinator
         }
         catch (Exception ex)
         {
-            Log($"Pin preparation failed: {ex}");
+            LogFailure("pin-preparation-failed", ex);
         }
     }
 
@@ -500,7 +618,7 @@ public sealed class CaptureCoordinator
         }
         catch (Exception ex)
         {
-            Log($"Pinned shot persistence failed: {ex}");
+            LogFailure("pinned-shot-persistence-failed", ex);
         }
     }
 
@@ -564,26 +682,60 @@ public sealed class CaptureCoordinator
                     globalRegion,
                     sourceSnapshot,
                     capturedAt));
-            Log($"shot stored: id={stored.Shot.Id}, sha={stored.Shot.Sha256}, " +
-                $"app={stored.Shot.AppName ?? "unknown"}, window={stored.Shot.WindowTitle ?? "unknown"}");
+            Log($"shot stored: id={stored.Shot.Id}, sha={stored.Shot.Sha256}");
 
             var execution = await _actionExecutor.ExecuteAsync(
                 decision.ActionId,
                 _actionContextFactory.Create(prepared, pinnedRegion, capturedAt));
             if (!execution.IsSuccess)
-                Log($"action {decision.ActionId} ended: {execution.Status}, {execution.Error}");
+            {
+                if (execution.Error is { } executionError)
+                {
+                    LogFailure(
+                        "capture-action-failed",
+                        executionError,
+                        new Dictionary<string, string?>
+                        {
+                            ["actionId"] = decision.ActionId,
+                            ["status"] = execution.Status.ToString()
+                        });
+                }
+                else
+                {
+                    Log($"action {decision.ActionId} ended: {execution.Status}");
+                }
+            }
             else
                 Log($"action {decision.ActionId} completed");
         }
         catch (Exception ex)
         {
-            Log($"Action preparation failed: {ex}");
+            LogFailure("action-preparation-failed", ex);
         }
     }
 
     private void EndCaptureSession()
     {
-        Interlocked.Exchange(ref _highResolutionTransitionInProgress, 0);
-        Interlocked.Exchange(ref _captureInProgress, 0);
+        ReleaseHighResolutionCancellation(cancel: true);
+        _captureSessionGate.EndCapture();
+    }
+
+    private void ReleaseHighResolutionCancellation(bool cancel)
+    {
+        var cancellation = Interlocked.Exchange(ref _highResolutionCancellation, null);
+        if (cancellation is null)
+            return;
+        try
+        {
+            if (cancel)
+                cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
     }
 }

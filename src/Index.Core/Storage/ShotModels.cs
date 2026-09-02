@@ -61,6 +61,20 @@ public interface IShotPageSource
         CancellationToken cancellationToken = default);
 }
 
+public interface IShotGallerySource : IShotPageSource
+{
+    Task<long> GetCountAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IShotCaptureEventSource
+{
+    event Action<StoredCapture>? CaptureSaved;
+}
+
+public interface IShotLibrarySource : IShotGallerySource, IShotCaptureEventSource
+{
+}
+
 public sealed record CapturedApplicationIdentity
 {
     public CapturedApplicationIdentity(string name, string? appIdentifier)
@@ -132,13 +146,11 @@ public interface IShotCaptureWriter
         CancellationToken cancellationToken = default);
 }
 
-public interface IShotStore : IShotCaptureWriter, IShotPageSource, IShotApplicationSource
+public interface IShotStore : IShotCaptureWriter, IShotGallerySource, IShotApplicationSource
 {
     Task<IReadOnlyList<ShotRecord>> GetRecentAsync(
         int limit = 300,
         CancellationToken cancellationToken = default);
-
-    Task<long> GetCountAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<ShotRecord>> GetByIdsAsync(
         IReadOnlyCollection<long> shotIds,

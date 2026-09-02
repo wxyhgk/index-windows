@@ -1,6 +1,7 @@
 using Index.App;
 using Index.Clipboard;
 using Index.Capture;
+using Index.Gallery;
 using Index.Navigation;
 using Index.Platform;
 using Index.Platform.Clipboard;
@@ -9,8 +10,10 @@ using Index.Search;
 using Index.Settings;
 using Index.Storage;
 using Index.UI.Applications;
+using Index.UI.Clipboard;
 using Index.UI.Gallery;
 using Index.UI.Search;
+using Index.UI.Settings;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -20,54 +23,66 @@ namespace Index.UI;
 public sealed partial class MainWindow : Window
 {
     private readonly CaptureCoordinator _coordinator;
-    private readonly ShotStore _shotStore;
-    private readonly LibraryOrganizationStore _libraryOrganization;
+    private readonly IShotLibrarySource _shotLibrary;
     private readonly IShortcutSettingsStore _shortcutSettings;
     private readonly VirtualDisplayCaptureWorkflow _virtualDisplayCapture;
     private readonly IClipboardHistorySource _clipboardHistory;
     private readonly IClipboardWriter _clipboardWriter;
     private readonly IUnifiedSearchService _unifiedSearch;
+    private readonly ICapturedApplicationsWorkspaceControllerFactory _applicationsWorkspaceControllers;
     private readonly IShotAssetReader _shotAssets;
+    private readonly GalleryShotCommandService _galleryCommands;
     private readonly IRecognitionPluginRegistry _recognitionPlugins;
+    private readonly LibraryWorkspaceController _libraryWorkspaceController;
     private readonly MainContentHost _contentHost = new();
+    private readonly MainPageOwner _pageOwner;
     private readonly StackPanel _subTabs = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private readonly GalleryTheme _theme = new();
     private readonly MainNavigationState _navigation = new();
+    private readonly MainNavigationDestinationRegistry _topDestinations =
+        MainNavigationDestinationRegistry.CreateDefault();
     private readonly Dictionary<MainNavigationPage, Button> _topButtons = new();
     private readonly Dictionary<LibrarySection, Button> _subButtons = new();
     private ShotPreviewView? _previewView;
     private ShotGalleryGridView? _previewGallery;
-    private ShotGalleryGridView? _activeGallery;
-    private ApplicationsWorkspaceView? _applicationsView;
-    private UnifiedSearchView? _searchView;
     private bool _galleryRefreshPending;
+    private bool _applicationsRefreshPending;
+    private bool _isClosing;
     private bool _closeToTrayEnabled;
     private bool _exitRequested;
     private CancellationTokenSource? _trayTrimCancellation;
 
-    public MainWindow(
+    internal MainWindow(
         CaptureCoordinator coordinator,
-        ShotStore shotStore,
-        LibraryOrganizationStore libraryOrganization,
+        IShotLibrarySource shotLibrary,
+        LibraryWorkspaceController libraryWorkspaceController,
         IShortcutSettingsStore shortcutSettings,
         VirtualDisplayCaptureWorkflow virtualDisplayCapture,
         IClipboardHistorySource clipboardHistory,
         IClipboardWriter clipboardWriter,
+        IUnifiedSearchService unifiedSearch,
+        ICapturedApplicationsWorkspaceControllerFactory applicationsWorkspaceControllers,
         IShotAssetReader shotAssets,
+        GalleryShotCommandService galleryCommands,
         IRecognitionPluginRegistry recognitionPlugins)
     {
         _coordinator = coordinator;
-        _shotStore = shotStore;
-        _libraryOrganization = libraryOrganization;
+        _shotLibrary = shotLibrary ?? throw new ArgumentNullException(nameof(shotLibrary));
         _shortcutSettings = shortcutSettings;
         _virtualDisplayCapture = virtualDisplayCapture
             ?? throw new ArgumentNullException(nameof(virtualDisplayCapture));
         _clipboardHistory = clipboardHistory;
         _clipboardWriter = clipboardWriter;
-        _unifiedSearch = new UnifiedSearchService(_shotStore, _clipboardHistory);
+        _unifiedSearch = unifiedSearch ?? throw new ArgumentNullException(nameof(unifiedSearch));
+        _applicationsWorkspaceControllers = applicationsWorkspaceControllers
+            ?? throw new ArgumentNullException(nameof(applicationsWorkspaceControllers));
         _shotAssets = shotAssets;
+        _galleryCommands = galleryCommands;
         _recognitionPlugins = recognitionPlugins;
-        _shotStore.CaptureSaved += OnCaptureSaved;
+        _libraryWorkspaceController = libraryWorkspaceController
+            ?? throw new ArgumentNullException(nameof(libraryWorkspaceController));
+        _pageOwner = new MainPageOwner(_contentHost);
+        _shotLibrary.CaptureSaved += OnCaptureSaved;
         Closed += OnClosed;
         AppWindow.Closing += OnAppWindowClosing;
         var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Index.ico");
@@ -91,10 +106,7 @@ public sealed partial class MainWindow : Window
             Spacing = 8,
             Margin = new Thickness(0, 0, 0, 16)
         };
-        AddTopTab(top, MainNavigationPage.Library, "内容库");
-        AddTopTab(top, MainNavigationPage.Collections, "收藏");
-        AddTopTab(top, MainNavigationPage.Apps, "应用");
-        AddTopTab(top, MainNavigationPage.Settings, "设置");
+        AddTopTabs(top);
         root.Children.Add(top);
 
         var panel = new Border
@@ -129,12 +141,4 @@ public sealed partial class MainWindow : Window
     private void ApplyTheme(ElementTheme theme)
         => _theme.Apply(theme);
 
-    private void DisposeActiveGallery()
-    {
-        var gallery = _activeGallery;
-        _activeGallery = null;
-        if (ReferenceEquals(_previewGallery, gallery))
-            _previewGallery = null;
-        gallery?.Dispose();
-    }
 }

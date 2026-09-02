@@ -69,6 +69,108 @@ public sealed class VirtualDisplayCaptureWorkflowTests
         Assert.Equal(0, persistence.SaveCount);
     }
 
+    [Fact]
+    public async Task WaitForCompletionIncludesLeaseRestoreAfterCancellation()
+    {
+        var source = new RestoringFrameSource();
+        var workflow = new VirtualDisplayCaptureWorkflow(
+            source,
+            new FakeSourceResolver(),
+            new FakeImagePreparer(),
+            new FakePersistence());
+        using var cancellation = new CancellationTokenSource();
+
+        var capture = workflow.CaptureAndSaveAsync(cancellation.Token);
+        await source.CaptureStarted.Task;
+        cancellation.Cancel();
+        await source.RestoreStarted.Task;
+
+        Assert.False(await workflow.WaitForCompletionAsync(
+            TimeSpan.FromMilliseconds(10)));
+        var busy = await workflow.CaptureAndSaveAsync();
+        Assert.Equal(VirtualDisplayCaptureOutcomeKind.Busy, busy.Kind);
+
+        source.AllowRestore.SetResult();
+        Assert.True(await workflow.WaitForCompletionAsync(TimeSpan.FromSeconds(1)));
+        var outcome = await capture;
+        Assert.Equal(VirtualDisplayCaptureOutcomeKind.Canceled, outcome.Kind);
+    }
+
+    [Fact]
+    public async Task BeginShutdownCancelsCaptureAndExposesLeaseRestoration()
+    {
+        var source = new RestoringFrameSource();
+        var workflow = new VirtualDisplayCaptureWorkflow(
+            source,
+            new FakeSourceResolver(),
+            new FakeImagePreparer(),
+            new FakePersistence());
+
+        var capture = workflow.CaptureAndSaveAsync();
+        await source.CaptureStarted.Task;
+
+        var shutdown = workflow.BeginShutdown();
+        await source.RestoreStarted.Task;
+
+        Assert.Equal("virtual-display", shutdown.Name);
+        Assert.False(shutdown.Restoration.IsCompleted);
+        var rejected = await workflow.CaptureAndSaveAsync();
+        Assert.Equal(VirtualDisplayCaptureOutcomeKind.Canceled, rejected.Kind);
+
+        source.AllowRestore.SetResult();
+        await shutdown.Restoration;
+        var outcome = await capture;
+        Assert.Equal(VirtualDisplayCaptureOutcomeKind.Canceled, outcome.Kind);
+    }
+
+    [Fact]
+    public async Task ShutdownRestorationDoesNotWaitForPersistence()
+    {
+        var persistence = new BlockingPersistence();
+        var workflow = new VirtualDisplayCaptureWorkflow(
+            new FakeFrameSource(
+                new VirtualDisplayCaptureStatus(
+                    VirtualDisplayAvailability.Active,
+                    "VDD by MTT",
+                    3840,
+                    2160),
+                Snapshot()),
+            new FakeSourceResolver(),
+            new FakeImagePreparer(),
+            persistence);
+
+        var capture = workflow.CaptureAndSaveAsync();
+        await persistence.Started.Task;
+
+        var shutdown = workflow.BeginShutdown();
+        await shutdown.Restoration;
+
+        Assert.False(capture.IsCompleted);
+        persistence.AllowSave.SetResult();
+        Assert.Equal(VirtualDisplayCaptureOutcomeKind.Success, (await capture).Kind);
+    }
+
+    [Fact]
+    public async Task ShutdownRestorationSurfacesFrameScopeFailure()
+    {
+        var source = new FailingFrameSource();
+        var workflow = new VirtualDisplayCaptureWorkflow(
+            source,
+            new FakeSourceResolver(),
+            new FakeImagePreparer(),
+            new FakePersistence());
+
+        var capture = workflow.CaptureAndSaveAsync();
+        await source.Started.Task;
+        var shutdown = workflow.BeginShutdown();
+        source.AllowFailure.SetResult();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => shutdown.Restoration);
+        Assert.Equal("restore failed", error.Message);
+        Assert.Equal(VirtualDisplayCaptureOutcomeKind.Failed, (await capture).Kind);
+    }
+
     private static VirtualDisplayCaptureWorkflow CreateWorkflow(
         FakeFrameSource source,
         out FakePersistence persistence)
@@ -122,6 +224,64 @@ public sealed class VirtualDisplayCaptureWorkflowTests
             if (_cancelDuringCapture)
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             return _snapshot ?? throw new InvalidOperationException("Missing fake frame.");
+        }
+    }
+
+    private sealed class RestoringFrameSource : IVirtualDisplayFrameSource
+    {
+        public TaskCompletionSource CaptureStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource RestoreStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowRestore { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public VirtualDisplayCaptureStatus GetStatus() => new(
+            VirtualDisplayAvailability.Active,
+            "VDD by MTT",
+            3840,
+            2160);
+
+        public async Task<DisplaySnapshot> CaptureAsync(
+            CancellationToken cancellationToken = default)
+        {
+            CaptureStarted.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            finally
+            {
+                RestoreStarted.TrySetResult();
+                await AllowRestore.Task;
+            }
+
+            throw new InvalidOperationException("The cancellation wait unexpectedly completed.");
+        }
+    }
+
+    private sealed class FailingFrameSource : IVirtualDisplayFrameSource
+    {
+        public TaskCompletionSource Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowFailure { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public VirtualDisplayCaptureStatus GetStatus() => new(
+            VirtualDisplayAvailability.Active,
+            "VDD by MTT",
+            3840,
+            2160);
+
+        public async Task<DisplaySnapshot> CaptureAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Started.SetResult();
+            await AllowFailure.Task;
+            throw new InvalidOperationException("restore failed");
         }
     }
 
@@ -179,6 +339,43 @@ public sealed class VirtualDisplayCaptureWorkflowTests
                     request.Selection.Height,
                     "png"),
                 new RevisionRecord(1, 1, null, DateTimeOffset.UtcNow, null, "[]")));
+        }
+    }
+
+    private sealed class BlockingPersistence : ICapturePersistenceService
+    {
+        public TaskCompletionSource Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowSave { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<StoredCapture> SaveAsync(
+            CapturePersistenceRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Started.SetResult();
+            await AllowSave.Task;
+            return new StoredCapture(
+                new ShotRecord(
+                    1,
+                    "sha",
+                    DateTimeOffset.UtcNow,
+                    request.Selection.Width,
+                    request.Selection.Height,
+                    1,
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    request.Display.DeviceName,
+                    request.GlobalRegion.Left,
+                    request.GlobalRegion.Top,
+                    request.Selection.Width,
+                    request.Selection.Height,
+                    "png"),
+                new RevisionRecord(1, 1, null, DateTimeOffset.UtcNow, null, "[]"));
         }
     }
 }

@@ -5,44 +5,52 @@ namespace Index.UI;
 
 internal sealed class MainContentHost : Grid
 {
+    private readonly Grid _destinationLayer = new();
+    private readonly Grid _overlayLayer = new();
     private FrameworkElement? _body;
     private FrameworkElement? _overlay;
 
+    public MainContentHost()
+    {
+        Children.Add(_destinationLayer);
+        Canvas.SetZIndex(_overlayLayer, 100);
+        _overlayLayer.IsHitTestVisible = false;
+        Children.Add(_overlayLayer);
+    }
+
     public void ShowLibrary(FrameworkElement header)
     {
-        Children.Clear();
-        RowDefinitions.Clear();
-        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _destinationLayer.Children.Clear();
+        _destinationLayer.RowDefinitions.Clear();
+        _destinationLayer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _destinationLayer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         _body = null;
-        _overlay = null;
         Grid.SetRow(header, 0);
-        Children.Add(header);
+        _destinationLayer.Children.Add(header);
     }
 
     public void ShowLibraryBody(FrameworkElement body)
     {
         if (_body is not null)
-            Children.Remove(_body);
+            _destinationLayer.Children.Remove(_body);
 
         _body = body;
         Grid.SetRow(body, 1);
-        Children.Add(body);
+        _destinationLayer.Children.Add(body);
     }
 
     public void ShowPage(FrameworkElement page)
     {
-        Children.Clear();
-        RowDefinitions.Clear();
-        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _destinationLayer.Children.Clear();
+        _destinationLayer.RowDefinitions.Clear();
+        _destinationLayer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         _body = page;
-        _overlay = null;
         Grid.SetRow(page, 0);
-        Children.Add(page);
+        _destinationLayer.Children.Add(page);
     }
 
     public bool IsOverlayVisible(FrameworkElement overlay) =>
-        ReferenceEquals(_overlay, overlay) && Children.Contains(overlay);
+        ReferenceEquals(_overlay, overlay) && _overlayLayer.Children.Contains(overlay);
 
     public void ShowOverlay(FrameworkElement overlay)
     {
@@ -50,13 +58,11 @@ internal sealed class MainContentHost : Grid
             return;
 
         if (_overlay is not null)
-            Children.Remove(_overlay);
+            _overlayLayer.Children.Remove(_overlay);
 
         _overlay = overlay;
-        Grid.SetRow(overlay, 0);
-        Grid.SetRowSpan(overlay, Math.Max(1, RowDefinitions.Count));
-        Canvas.SetZIndex(overlay, 100);
-        Children.Add(overlay);
+        _overlayLayer.IsHitTestVisible = true;
+        _overlayLayer.Children.Add(overlay);
     }
 
     public bool HideOverlay(FrameworkElement overlay)
@@ -64,8 +70,9 @@ internal sealed class MainContentHost : Grid
         if (!IsOverlayVisible(overlay))
             return false;
 
-        Children.Remove(overlay);
+        _overlayLayer.Children.Remove(overlay);
         _overlay = null;
+        _overlayLayer.IsHitTestVisible = false;
         return true;
     }
 }

@@ -4,6 +4,7 @@ using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Storage.Streams;
 using WinRT;
+using Index.Platform.Diagnostics;
 
 namespace Index.Platform;
 
@@ -28,9 +29,14 @@ public interface IDisplaySurfaceCapture
 /// </summary>
 public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture, IDisplaySurfaceCapture
 {
-    private const string CaptureLogPath = @"C:\temp\index_capture.log";
+    private readonly IAppDiagnostics _diagnostics;
     private static readonly Guid GraphicsCaptureItemGuid =
         new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
+
+    public WindowsGraphicsCaptureInterop(IAppDiagnostics? diagnostics = null)
+    {
+        _diagnostics = diagnostics ?? NullAppDiagnostics.Instance;
+    }
 
     public async Task<byte[]?> TryCapturePngAsync(
         nint window,
@@ -58,7 +64,7 @@ public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture, IDisp
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<byte[]?> TryCaptureTargetPngAsync(
+    private async Task<byte[]?> TryCaptureTargetPngAsync(
         nint target,
         string targetKind,
         Func<nint, GraphicsCaptureItem?> createItem,
@@ -137,8 +143,7 @@ public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture, IDisp
         }
         catch (Exception error)
         {
-            Log($"capture failed: {targetKind}=0x{target:X}, " +
-                $"{error.GetType().Name}: {error.Message}");
+            LogFailure(targetKind, target, error);
             return null;
         }
     }
@@ -170,17 +175,47 @@ public sealed class WindowsGraphicsCaptureInterop : IWindowSurfaceCapture, IDisp
         }
     }
 
-    private static void Log(string message)
+    private void Log(string message)
     {
-        try
+        var diagnostics = _diagnostics;
+        ThreadPool.QueueUserWorkItem(_ =>
         {
-            File.AppendAllText(
-                CaptureLogPath,
-                $"[{DateTime.Now:HH:mm:ss.fff}] [wgc] {message}{Environment.NewLine}");
-        }
-        catch
+            try
+            {
+                diagnostics.Write(
+                    AppDiagnosticLevel.Trace,
+                    "capture.wgc",
+                    "wgc-trace",
+                    new Dictionary<string, string?> { ["message"] = message });
+            }
+            catch
+            {
+            }
+        });
+    }
+
+    private void LogFailure(string targetKind, nint target, Exception error)
+    {
+        var diagnostics = _diagnostics;
+        ThreadPool.QueueUserWorkItem(_ =>
         {
-        }
+            try
+            {
+                diagnostics.Write(
+                    AppDiagnosticLevel.Error,
+                    "capture.wgc",
+                    "capture-failed",
+                    new Dictionary<string, string?>
+                    {
+                        ["targetKind"] = targetKind,
+                        ["target"] = $"0x{target:X}"
+                    },
+                    error);
+            }
+            catch
+            {
+            }
+        });
     }
 
     [ComImport]

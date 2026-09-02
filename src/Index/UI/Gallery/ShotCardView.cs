@@ -14,7 +14,7 @@ internal sealed class ShotCardView : UserControl, IDisposable
     private readonly Border _selectionBadge;
     private readonly Border _dimensionBar;
     private readonly TextBlock _dimensionText;
-    private readonly ShotThumbnailView _thumbnail;
+    private readonly ShotAssetThumbnailView _thumbnail;
     private readonly Grid _thumbnailLayer;
     private Grid _headerRow = null!;
     private TextBlock _headerLabel = null!;
@@ -35,14 +35,14 @@ internal sealed class ShotCardView : UserControl, IDisposable
         CardAppearance appearance,
         GalleryTheme theme,
         double thumbnailHeight,
-        params string[] thumbnailPaths)
+        IShotAssetReader assets)
     {
         _theme = theme;
         Shot = shot;
         Appearance = appearance;
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
 
-        _thumbnail = new ShotThumbnailView(thumbnailPaths)
+        _thumbnail = new ShotAssetThumbnailView(assets, shot)
         {
             Height = thumbnailHeight,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -161,7 +161,7 @@ internal sealed class ShotCardView : UserControl, IDisposable
             UpdateSurfaceBorder();
         };
         Content = button;
-        Bind(shot, appearance, thumbnailPaths);
+        Bind(shot, appearance);
     }
 
     public ShotRecord Shot { get; private set; }
@@ -181,7 +181,7 @@ internal sealed class ShotCardView : UserControl, IDisposable
         }
     }
 
-    public void Bind(ShotRecord shot, CardAppearance appearance, params string[] thumbnailPaths)
+    public void Bind(ShotRecord shot, CardAppearance appearance)
     {
         Shot = shot;
         Appearance = appearance;
@@ -204,12 +204,9 @@ internal sealed class ShotCardView : UserControl, IDisposable
                 ? null
                 : new SourceIconView(shot.AppIdentifier, shot.AppName, shot.SourceUrl);
         }
-        _thumbnail.SetPaths(thumbnailPaths);
+        _thumbnail.Bind(shot);
         IsSelected = false;
     }
-
-    public void SetThumbnailPaths(params string[] thumbnailPaths)
-        => _thumbnail.SetPaths(thumbnailPaths);
 
     private Border MakeHeader()
     {

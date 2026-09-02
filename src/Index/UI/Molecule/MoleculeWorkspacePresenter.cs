@@ -16,16 +16,15 @@ internal interface IRecognitionResultPresenter<in TOutput>
 internal sealed class MoleculeWorkspacePresenter
     : IRecognitionResultPresenter<MoleculeRecognitionResult>, IDisposable
 {
-    private static readonly TimeSpan IdleDisposeDelay = TimeSpan.FromMinutes(10);
     private readonly Grid _host;
     private readonly Border _panel;
     private readonly ColumnDefinition _column;
     private readonly TextBlock _status;
     private readonly TextBlock _details;
     private readonly Func<Task> _returnToUiAsync;
+    private readonly SemaphoreSlim _scriptGate = new(1, 1);
     private MoleculeSketcherView? _sketcher;
     private Task? _initialization;
-    private CancellationTokenSource? _idleDisposeCancellation;
     private int _generation;
     private bool _disposed;
 
@@ -46,24 +45,38 @@ internal sealed class MoleculeWorkspacePresenter
     }
 
     public Task OpenBlankAsync(CancellationToken cancellationToken = default) =>
+        OpenBlankAsync(cancellationToken, static () => true);
+
+    public Task OpenBlankAsync(
+        CancellationToken cancellationToken,
+        Func<bool> isCurrent) =>
         ShowAsync(
             sdf: null,
             smiles: null,
             confidence: 0,
             processingMs: 0,
-            cancellationToken);
+            cancellationToken,
+            isCurrent);
 
     public Task PresentAsync(
         MoleculeRecognitionResult output,
         CancellationToken cancellationToken = default)
+        => PresentAsync(output, cancellationToken, static () => true);
+
+    public Task PresentAsync(
+        MoleculeRecognitionResult output,
+        CancellationToken cancellationToken,
+        Func<bool> isCurrent)
     {
         ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(isCurrent);
         return ShowAsync(
             output.Sdf,
             output.Smiles,
             output.Confidence,
             output.ProcessingTimeMs,
-            cancellationToken);
+            cancellationToken,
+            isCurrent);
     }
 
     public void Hide()
@@ -76,7 +89,6 @@ internal sealed class MoleculeWorkspacePresenter
         ++_generation;
         _panel.Visibility = Visibility.Collapsed;
         _column.Width = new GridLength(0);
-        ScheduleIdleDispose();
     }
 
     public void Dispose()
@@ -88,7 +100,6 @@ internal sealed class MoleculeWorkspacePresenter
 
         _disposed = true;
         ++_generation;
-        CancelIdleDispose();
         DisposeSketcher();
     }
 
@@ -97,13 +108,15 @@ internal sealed class MoleculeWorkspacePresenter
         string? smiles,
         double confidence,
         int processingMs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<bool> isCurrent)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        CancelIdleDispose();
         var generation = ++_generation;
         await _returnToUiAsync();
         cancellationToken.ThrowIfCancellationRequested();
+        if (!isCurrent())
+            return;
 
         _panel.Visibility = Visibility.Visible;
         _column.Width = new GridLength(1.2, GridUnitType.Star);
@@ -118,12 +131,18 @@ internal sealed class MoleculeWorkspacePresenter
             _initialization = _sketcher.InitializeAsync();
         }
 
+        var scriptGateHeld = false;
         try
         {
             await (_initialization ?? Task.CompletedTask);
+            await _scriptGate.WaitAsync(cancellationToken);
+            scriptGateHeld = true;
             await _returnToUiAsync();
             cancellationToken.ThrowIfCancellationRequested();
-            if (_disposed || generation != _generation || _sketcher is null)
+            if (_disposed
+                || generation != _generation
+                || !isCurrent()
+                || _sketcher is null)
             {
                 return;
             }
@@ -142,7 +161,8 @@ internal sealed class MoleculeWorkspacePresenter
             }
 
             await _returnToUiAsync();
-            if (!_disposed && generation == _generation)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_disposed && generation == _generation && isCurrent())
             {
                 _status.Text = sdf is null && smiles is null
                     ? "空白画布已就绪"
@@ -155,56 +175,16 @@ internal sealed class MoleculeWorkspacePresenter
         catch (Exception error)
         {
             await _returnToUiAsync();
-            if (!_disposed && generation == _generation)
+            if (!_disposed && generation == _generation && isCurrent())
             {
                 _status.Text = $"分子编辑器加载失败：{error.Message}";
             }
         }
-    }
-
-    private void ScheduleIdleDispose()
-    {
-        CancelIdleDispose();
-        if (_sketcher is null)
-            return;
-
-        var cancellation = new CancellationTokenSource();
-        _idleDisposeCancellation = cancellation;
-        _ = DisposeSketcherAfterIdleAsync(cancellation);
-    }
-
-    private async Task DisposeSketcherAfterIdleAsync(
-        CancellationTokenSource cancellation)
-    {
-        try
-        {
-            await Task.Delay(IdleDisposeDelay, cancellation.Token)
-                .ConfigureAwait(false);
-            await _returnToUiAsync();
-            if (!_disposed
-                && ReferenceEquals(_idleDisposeCancellation, cancellation)
-                && _panel.Visibility == Visibility.Collapsed)
-            {
-                _idleDisposeCancellation = null;
-                DisposeSketcher();
-            }
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
         finally
         {
-            if (ReferenceEquals(_idleDisposeCancellation, cancellation))
-                _idleDisposeCancellation = null;
-            cancellation.Dispose();
+            if (scriptGateHeld)
+                _scriptGate.Release();
         }
-    }
-
-    private void CancelIdleDispose()
-    {
-        var cancellation = _idleDisposeCancellation;
-        _idleDisposeCancellation = null;
-        cancellation?.Cancel();
     }
 
     private void DisposeSketcher()

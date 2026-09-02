@@ -6,7 +6,8 @@ using SkiaSharp;
 namespace Index.Storage;
 
 /// <summary>不可变原图文件与 Shot/Revision 数据库的统一入口。</summary>
-public sealed partial class ShotStore : IShotStore, IShotSearchSource
+public sealed partial class ShotStore
+    : IShotStore, IShotSearchSource, IShotDeletionRepository, IShotLibrarySource
 {
     private readonly IndexDatabase _database;
     private readonly ShotFileStore _files;

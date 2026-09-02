@@ -1,8 +1,9 @@
 using System.Runtime.InteropServices.WindowsRuntime;
-using Index.Platform;
+using Index.Gallery;
 using Index.Storage;
 using Index.UI.Molecule;
 using Index.Molecule;
+using Index.Preview;
 using Index.Recognition;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -22,9 +23,10 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
     private const double MaxScale = 8.0;
     private const double WheelScale = 1.08;
 
-    private readonly ShotStore _store;
     private readonly IShotAssetReader _shotAssets;
+    private readonly GalleryShotCommandService _commands;
     private readonly ShotRecognitionWorkflow<MoleculeRecognitionResult> _moleculeRecognition;
+    private readonly PreviewSessionController _previewSessions = new();
     private readonly GalleryTheme _theme;
     private readonly Microsoft.UI.Dispatching.DispatcherQueue _dispatcher;
     private readonly Grid _root;
@@ -43,19 +45,18 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
     private uint _panPointerId;
     private Point _lastPointerPosition;
     private Button? _recognizeButton;
-    private CancellationTokenSource _sessionCancellation = new();
-    private Guid _sessionId;
+    private PreviewSession? _session;
     private bool _disposed;
 
     public ShotPreviewView(
-        ShotStore store,
         IShotAssetReader shotAssets,
+        GalleryShotCommandService commands,
         IRecognitionPluginRegistry recognitionPlugins,
         GalleryTheme theme,
         ShotRecord shot)
     {
-        _store = store;
-        _shotAssets = shotAssets;
+        _shotAssets = shotAssets ?? throw new ArgumentNullException(nameof(shotAssets));
+        _commands = commands ?? throw new ArgumentNullException(nameof(commands));
         _moleculeRecognition = new ShotRecognitionWorkflow<MoleculeRecognitionResult>(
             shotAssets,
             recognitionPlugins,
@@ -122,7 +123,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         toolbar.Children.Add(_zoomLabel);
 
         var open = MakeButton("打开原图", "使用系统默认程序打开");
-        open.Click += (_, _) => OpenOriginal();
+        open.Click += OnOpenOriginalClicked;
         Grid.SetColumn(open, 5);
         toolbar.Children.Add(open);
 
@@ -280,30 +281,31 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
     public void ShowShot(ShotRecord shot)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        BeginSession();
+        _moleculeRecognition.CancelCurrent();
+        var session = _previewSessions.Begin(shot.Id);
+        _session = session;
         _shot = shot;
         _title.Text = shot.WindowTitle ?? shot.AppName ?? $"截图 {shot.Id}";
         _metadata.Text = $"{shot.PixelWidth} × {shot.PixelHeight}  ·  {shot.CapturedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}  ·  {shot.AppName ?? "未知来源"}";
         _image.Source = null;
         _recognizeButton!.IsEnabled = true;
         _recognizeButton.Content = "识别分子";
-        var sessionId = _sessionId;
-        _ = LoadImageAsync(shot, sessionId, _sessionCancellation.Token);
+        _ = LoadImageAsync(shot, session);
         _moleculePresenter.Hide();
         ResetView();
     }
 
     private async Task LoadImageAsync(
         ShotRecord shot,
-        Guid sessionId,
-        CancellationToken cancellationToken)
+        PreviewSession session)
     {
+        var cancellationToken = session.CancellationToken;
         try
         {
             var asset = await _shotAssets.ReadBestAvailableAsync(shot, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             await ReturnToUiAsync();
-            if (!IsCurrentSession(sessionId))
+            if (!_previewSessions.IsCurrent(session))
                 return;
 
             if (!asset.HasData)
@@ -325,23 +327,18 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         }
         catch (Exception ex)
         {
-            await ReturnToUiAsync();
-            if (IsCurrentSession(sessionId))
+            try
+            {
+                await ReturnToUiAsync();
+            }
+            catch
+            {
+                return;
+            }
+            if (_previewSessions.IsCurrent(session))
                 _metadata.Text = $"图片加载失败：{ex.Message}";
         }
     }
-
-    private void BeginSession()
-    {
-        _moleculeRecognition.CancelCurrent();
-        _sessionCancellation.Cancel();
-        _sessionCancellation.Dispose();
-        _sessionCancellation = new CancellationTokenSource();
-        _sessionId = Guid.NewGuid();
-    }
-
-    private bool IsCurrentSession(Guid sessionId)
-        => !_disposed && sessionId == _sessionId;
 
     private Task ReturnToUiAsync()
     {
@@ -458,58 +455,73 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         }
     }
 
-    private void OpenOriginal()
+    private async void OnOpenOriginalClicked(object sender, RoutedEventArgs args)
     {
-        var path = _store.OriginalPath(_shot);
-        if (!File.Exists(path))
-        {
-            _metadata.Text = "原图文件缺失，无法使用系统程序打开；工作区仍可显示缩略图";
+        var session = _session;
+        if (session is null)
             return;
-        }
 
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path)
+        try
         {
-            UseShellExecute = true
-        });
+            await _commands.OpenOriginalAsync(_shot, session.CancellationToken);
+        }
+        catch (OperationCanceledException) when (session.CancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            if (_previewSessions.IsCurrent(session))
+                _metadata.Text = $"打开原图失败：{error.Message}";
+        }
     }
 
     private async void OnRecognizeClicked(object sender, RoutedEventArgs e)
     {
+        var session = _session;
+        if (session is null)
+            return;
+
         try
         {
-            await RecognizeMoleculeAsync();
+            await RecognizeMoleculeAsync(session);
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception error)
         {
-            if (!_disposed)
+            if (_previewSessions.IsCurrent(session))
                 _metadata.Text = $"分子识别异常：{error.Message}";
         }
     }
 
     private async void OnDrawMoleculeClicked(object sender, RoutedEventArgs e)
     {
+        var session = _session;
+        if (session is null)
+            return;
+
         try
         {
-            await _moleculePresenter.OpenBlankAsync(_sessionCancellation.Token);
+            await _moleculePresenter.OpenBlankAsync(
+                session.CancellationToken,
+                () => _previewSessions.IsCurrent(session));
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception error)
         {
-            if (!_disposed)
+            if (_previewSessions.IsCurrent(session))
                 _metadata.Text = $"分子编辑器异常：{error.Message}";
         }
     }
 
-    private async Task RecognizeMoleculeAsync()
+    private async Task RecognizeMoleculeAsync(PreviewSession session)
     {
         if (_recognizeButton is not { } btn) return;
-        var sessionId = _sessionId;
-        var cancellationToken = _sessionCancellation.Token;
+        if (!_previewSessions.IsCurrent(session)) return;
+        var cancellationToken = session.CancellationToken;
         var shot = _shot;
         btn.IsEnabled = false;
         var originalText = (string)btn.Content;
@@ -522,7 +534,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
 
             await RunOnUiAsync(async () =>
             {
-                if (!IsCurrentSession(sessionId))
+                if (!_previewSessions.IsCurrent(session))
                     return;
 
                 if (!string.IsNullOrWhiteSpace(run.Warning))
@@ -542,7 +554,12 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
                         Output: { } result
                     })
                 {
-                    await _moleculePresenter.PresentAsync(result, cancellationToken);
+                    await _moleculePresenter.PresentAsync(
+                        result,
+                        cancellationToken,
+                        () => _previewSessions.IsCurrent(session));
+                    if (!_previewSessions.IsCurrent(session))
+                        return;
                 }
             });
         }
@@ -553,7 +570,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         {
             await RunOnUiAsync(() =>
             {
-                if (IsCurrentSession(sessionId))
+                if (_previewSessions.IsCurrent(session))
                     _metadata.Text = $"分子识别异常：{ex.Message}";
             });
         }
@@ -561,7 +578,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         {
             await RunOnUiAsync(() =>
             {
-                if (IsCurrentSession(sessionId))
+                if (_previewSessions.IsCurrent(session))
                 {
                     btn.IsEnabled = true;
                     btn.Content = originalText;
@@ -620,8 +637,8 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
             return;
 
         _moleculeRecognition.CancelCurrent();
-        _sessionCancellation.Cancel();
-        _sessionId = Guid.NewGuid();
+        _previewSessions.Deactivate();
+        _session = null;
         _recognizeButton!.IsEnabled = true;
         _recognizeButton.Content = "识别分子";
         _moleculePresenter.Hide();
@@ -636,7 +653,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         Deactivate();
         _disposed = true;
         _moleculeRecognition.Dispose();
-        _sessionCancellation.Dispose();
+        _previewSessions.Dispose();
         _moleculePresenter.Dispose();
     }
 }

@@ -4,15 +4,18 @@ public enum ShotAssetStatus
 {
     Original,
     ThumbnailFallback,
-    Missing
+    Missing,
+    Corrupt
 }
 
 public sealed record ShotAssetReadResult(
     ShotAssetStatus Status,
     ReadOnlyMemory<byte> Data,
-    string? Warning = null)
+    string? Warning = null,
+    string MediaType = "image/png")
 {
-    public bool HasData => Status is not ShotAssetStatus.Missing && !Data.IsEmpty;
+    public bool HasData => Status is ShotAssetStatus.Original or ShotAssetStatus.ThumbnailFallback
+        && !Data.IsEmpty;
 }
 
 public interface IShotAssetReader
