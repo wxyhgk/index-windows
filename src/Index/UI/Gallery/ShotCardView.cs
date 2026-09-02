@@ -26,6 +26,8 @@ internal sealed class ShotCardView : UserControl, IDisposable
     private string? _boundSourceUrl;
     private readonly TextBlock _captionTitle;
     private readonly TextBlock _captionSubtitle;
+    private bool _isFocused;
+    private bool _isPointerOver;
     private bool _isSelected;
 
     public ShotCardView(
@@ -135,7 +137,10 @@ internal sealed class ShotCardView : UserControl, IDisposable
         {
             Padding = new Thickness(0),
             Background = new SolidColorBrush(Colors.Transparent),
+            BorderBrush = new SolidColorBrush(Colors.Transparent),
             BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(10),
+            UseSystemFocusVisuals = false,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -145,6 +150,16 @@ internal sealed class ShotCardView : UserControl, IDisposable
         button.DoubleTapped += (_, _) => PreviewRequested?.Invoke(this, EventArgs.Empty);
         button.PointerEntered += (_, _) => SetHover(true);
         button.PointerExited += (_, _) => SetHover(false);
+        button.GotFocus += (_, _) =>
+        {
+            _isFocused = true;
+            UpdateSurfaceBorder();
+        };
+        button.LostFocus += (_, _) =>
+        {
+            _isFocused = false;
+            UpdateSurfaceBorder();
+        };
         Content = button;
         Bind(shot, appearance, thumbnailPaths);
     }
@@ -162,8 +177,7 @@ internal sealed class ShotCardView : UserControl, IDisposable
             if (_isSelected == value) return;
             _isSelected = value;
             _selectionBadge.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-            _surface.BorderBrush = value ? _theme.Accent : _theme.CardBorder;
-            _surface.BorderThickness = value ? new Thickness(2) : new Thickness(1);
+            UpdateSurfaceBorder();
         }
     }
 
@@ -248,9 +262,21 @@ internal sealed class ShotCardView : UserControl, IDisposable
 
     private void SetHover(bool hovering)
     {
+        _isPointerOver = hovering;
         _dimensionBar.Visibility = hovering ? Visibility.Visible : Visibility.Collapsed;
-        if (!_isSelected)
-            _surface.BorderBrush = hovering ? _theme.HoverBorder : _theme.CardBorder;
+        UpdateSurfaceBorder();
+    }
+
+    private void UpdateSurfaceBorder()
+    {
+        _surface.BorderBrush = _isSelected || _isFocused
+            ? _theme.Accent
+            : _isPointerOver
+                ? _theme.HoverBorder
+                : _theme.CardBorder;
+        _surface.BorderThickness = _isSelected || _isFocused
+            ? new Thickness(2)
+            : new Thickness(1);
     }
 
     public void SetResponsiveWidth(double width)

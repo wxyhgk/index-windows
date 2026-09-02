@@ -15,11 +15,11 @@ internal sealed class AppIconView : UserControl, IDisposable
     private SKBitmap? _bitmap;
     private bool _disposed;
 
-    public AppIconView(string? executablePath, string? appName)
+    public AppIconView(string? executablePath, string? appName, double side = 14)
     {
         _executablePath = executablePath;
-        Width = 14;
-        Height = 14;
+        Width = side;
+        Height = side;
         ToolTipService.SetToolTip(this, appName);
         _canvas = new SKXamlCanvas { IgnorePixelScaling = true };
         _canvas.PaintSurface += Paint;

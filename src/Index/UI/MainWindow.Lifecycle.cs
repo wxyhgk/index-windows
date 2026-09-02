@@ -30,6 +30,7 @@ public sealed partial class MainWindow
         ClosePreview();
         CloseSearch();
         DisposeActiveGallery();
+        DisposeApplicationsWorkspace();
         _previewView?.Dispose();
         _previewView = null;
         _shotStore.CaptureSaved -= OnCaptureSaved;

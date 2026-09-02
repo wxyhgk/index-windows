@@ -40,6 +40,22 @@ public sealed class MainNavigationStateTests
     }
 
     [Fact]
+    public void AppsPreviewReturnsToApplicationsWorkspace()
+    {
+        var state = new MainNavigationState();
+        state.ShowPage(MainNavigationPage.Apps);
+
+        state.ShowPreview();
+
+        Assert.False(state.IsLibraryShots);
+        Assert.True(state.IsAppsWorkspace);
+        Assert.Equal(MainNavigationPage.Apps, state.PreviewReturnPage);
+        Assert.Equal(MainNavigationPage.Apps, state.ReturnFromPreview());
+        Assert.Equal(MainNavigationPage.Apps, state.Page);
+        Assert.True(state.IsAppsWorkspace);
+    }
+
+    [Fact]
     public void EveryTransitionInvalidatesPreviousGeneration()
     {
         var state = new MainNavigationState();

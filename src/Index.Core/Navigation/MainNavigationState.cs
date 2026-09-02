@@ -24,11 +24,20 @@ public sealed class MainNavigationState
 
     public LibrarySection Section { get; private set; } = LibrarySection.Shots;
 
+    public MainNavigationPage PreviewReturnPage { get; private set; } = MainNavigationPage.Library;
+
     public int Generation { get; private set; }
 
     public bool IsLibraryShots =>
-        Page is MainNavigationPage.Library or MainNavigationPage.PreviewWorkspace
+        (Page == MainNavigationPage.Library
+         || Page == MainNavigationPage.PreviewWorkspace
+            && PreviewReturnPage == MainNavigationPage.Library)
         && Section == LibrarySection.Shots;
+
+    public bool IsAppsWorkspace =>
+        Page == MainNavigationPage.Apps
+        || Page == MainNavigationPage.PreviewWorkspace
+           && PreviewReturnPage == MainNavigationPage.Apps;
 
     public int ShowLibrary(LibrarySection section)
     {
@@ -39,8 +48,19 @@ public sealed class MainNavigationState
 
     public int ShowPreview()
     {
+        if (Page != MainNavigationPage.PreviewWorkspace)
+            PreviewReturnPage = Page;
         Page = MainNavigationPage.PreviewWorkspace;
         return ++Generation;
+    }
+
+    public MainNavigationPage ReturnFromPreview()
+    {
+        if (Page != MainNavigationPage.PreviewWorkspace)
+            throw new InvalidOperationException("当前不在预览工作区。 ");
+        Page = PreviewReturnPage;
+        Generation++;
+        return Page;
     }
 
     public int ShowPage(MainNavigationPage page)

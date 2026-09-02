@@ -223,10 +223,11 @@ public sealed partial class MainWindow
         if (!wasActive)
             return;
 
-        var generation = _navigation.ShowLibrary(LibrarySection.Shots);
-        if (_galleryRefreshPending)
+        var returnPage = _navigation.ReturnFromPreview();
+        if (returnPage == MainNavigationPage.Library && _galleryRefreshPending)
         {
             _galleryRefreshPending = false;
+            var generation = _navigation.Refresh();
             _ = LoadShotGalleryAsync(generation);
         }
     }

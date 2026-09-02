@@ -1,4 +1,5 @@
 using Index.Navigation;
+using Index.UI.Applications;
 using Index.UI.Clipboard;
 using Index.UI.Search;
 using Index.UI.Settings;
@@ -27,6 +28,9 @@ public sealed partial class MainWindow
                     break;
                 case MainNavigationPage.Collections:
                     ShowCollections();
+                    break;
+                case MainNavigationPage.Apps:
+                    ShowApplications();
                     break;
                 default:
                     ShowSimplePage(page, title, "按来源应用浏览截图");
@@ -148,9 +152,24 @@ public sealed partial class MainWindow
             _shortcutSettings,
             _virtualDisplayCapture)
         {
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Top
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
         });
+    }
+
+    private void ShowApplications()
+    {
+        PrepareForNavigation();
+        Select(_topButtons, MainNavigationPage.Apps);
+        _navigation.ShowPage(MainNavigationPage.Apps);
+        _applicationsView = new ApplicationsWorkspaceView(
+            _shotStore,
+            _libraryOrganization,
+            _shotAssets,
+            _theme);
+        _applicationsView.PreviewRequested += OpenPreview;
+        _contentHost.ShowPage(_applicationsView);
+        _applicationsView.Start();
     }
 
     public void ShowLibraryPage()
@@ -164,6 +183,16 @@ public sealed partial class MainWindow
         ClosePreview();
         CloseSearch();
         DisposeActiveGallery();
+        DisposeApplicationsWorkspace();
+    }
+
+    private void DisposeApplicationsWorkspace()
+    {
+        if (_applicationsView is null)
+            return;
+        _applicationsView.PreviewRequested -= OpenPreview;
+        _applicationsView.Dispose();
+        _applicationsView = null;
     }
 
     private Button MakeButton(string title, bool compact = false) => new()

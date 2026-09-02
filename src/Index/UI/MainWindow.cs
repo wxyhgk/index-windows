@@ -8,6 +8,7 @@ using Index.Recognition;
 using Index.Search;
 using Index.Settings;
 using Index.Storage;
+using Index.UI.Applications;
 using Index.UI.Gallery;
 using Index.UI.Search;
 using Microsoft.UI.Xaml;
@@ -37,6 +38,7 @@ public sealed partial class MainWindow : Window
     private ShotPreviewView? _previewView;
     private ShotGalleryGridView? _previewGallery;
     private ShotGalleryGridView? _activeGallery;
+    private ApplicationsWorkspaceView? _applicationsView;
     private UnifiedSearchView? _searchView;
     private bool _galleryRefreshPending;
     private bool _closeToTrayEnabled;

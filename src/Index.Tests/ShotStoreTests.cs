@@ -161,6 +161,99 @@ public sealed class ShotStoreTests : IDisposable
         Assert.Equal(ids.OrderByDescending(id => id), ids);
     }
 
+    [Fact]
+    public async Task CapturedApplicationsAggregateStableIdentityAndRecentPreviews()
+    {
+        var store = await ShotStore.OpenAsync(_root);
+        var baseline = new DateTimeOffset(2026, 9, 2, 8, 0, 0, TimeSpan.Zero);
+        var edgePath = @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+        await store.SaveCaptureAsync(
+            MakePng(20, 10),
+            Metadata(20, 10) with
+            {
+                CapturedAt = baseline,
+                AppName = "Microsoft Edge",
+                AppIdentifier = edgePath,
+                WindowTitle = "旧页面"
+            },
+            new Layers<ImageSpace>());
+        var newestEdge = await store.SaveCaptureAsync(
+            MakePng(21, 11),
+            Metadata(21, 11) with
+            {
+                CapturedAt = baseline.AddMinutes(2),
+                AppName = "Microsoft Edge",
+                AppIdentifier = edgePath.ToUpperInvariant(),
+                WindowTitle = "新页面"
+            },
+            new Layers<ImageSpace>());
+        await store.SaveCaptureAsync(
+            MakePng(24, 14),
+            Metadata(24, 14) with
+            {
+                CapturedAt = baseline.AddMinutes(1),
+                AppName = "Microsoft Edge",
+                AppIdentifier = @"D:\Portable\Edge\msedge.exe",
+                WindowTitle = "便携版页面"
+            },
+            new Layers<ImageSpace>());
+        await store.SaveCaptureAsync(
+            MakePng(22, 12),
+            Metadata(22, 12) with
+            {
+                CapturedAt = baseline.AddMinutes(1),
+                AppName = "文件资源管理器",
+                AppIdentifier = @"C:\Windows\explorer.exe"
+            },
+            new Layers<ImageSpace>());
+        await store.SaveCaptureAsync(
+            MakePng(23, 13),
+            Metadata(23, 13) with { CapturedAt = baseline.AddMinutes(3) },
+            new Layers<ImageSpace>());
+
+        var applications = await store.GetCapturedApplicationsAsync(previewLimit: 1);
+
+        Assert.Equal(2, applications.Count);
+        var edge = applications.Single(application => application.Name == "Microsoft Edge");
+        Assert.Equal(3, edge.CaptureCount);
+        Assert.Equal(baseline.AddMinutes(2), edge.LastCapturedAt);
+        Assert.Equal(newestEdge.Shot.Id, Assert.Single(edge.Previews).Id);
+    }
+
+    [Fact]
+    public async Task ApplicationPagesOnlyReturnSelectedApplicationAndPreserveCursorOrder()
+    {
+        var store = await ShotStore.OpenAsync(_root);
+        var baseline = new DateTimeOffset(2026, 9, 2, 9, 0, 0, TimeSpan.Zero);
+        for (var index = 0; index < 5; index++)
+        {
+            await store.SaveCaptureAsync(
+                MakePng(30 + index, 20),
+                Metadata(30 + index, 20) with
+                {
+                    CapturedAt = baseline.AddSeconds(index),
+                    AppName = index == 4 ? "记事本" : "Microsoft Edge",
+                    AppIdentifier = index == 4 ? "notepad.exe" : "msedge.exe"
+                },
+                new Layers<ImageSpace>());
+        }
+
+        var identity = new CapturedApplicationIdentity("Microsoft Edge", "MSEDGE.EXE");
+        var ids = new List<long>();
+        ShotPageCursor? cursor = null;
+        do
+        {
+            var page = await store.GetApplicationPageAsync(identity, 2, cursor);
+            ids.AddRange(page.Items.Select(shot => shot.Id));
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+
+        Assert.Equal(4, ids.Count);
+        Assert.Equal(4, ids.Distinct().Count());
+        Assert.All(await store.GetByIdsAsync(ids), shot => Assert.Equal("Microsoft Edge", shot.AppName));
+        Assert.Equal(ids.OrderByDescending(id => id), ids);
+    }
+
     private static ShotCaptureMetadata Metadata(int width, int height) => new()
     {
         RegionX = 0,

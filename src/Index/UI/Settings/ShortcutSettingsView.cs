@@ -139,13 +139,23 @@ public sealed class ShortcutSettingsView : UserControl
         openDisplaySettings.Click += (_, _) => OpenDisplaySettings();
         content.Children.Add(openDisplaySettings);
 
-        Content = new Border
+        var settingsCard = new Border
         {
             Padding = new Thickness(20),
             CornerRadius = new CornerRadius(12),
             Child = content,
             MaxWidth = 620,
             HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        Content = new ScrollViewer
+        {
+            Content = settingsCard,
+            VerticalScrollMode = ScrollMode.Enabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollMode = ScrollMode.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Top
         };
         Loaded += (_, _) => RefreshVirtualDisplayStatus();
         Unloaded += (_, _) => CancelVirtualCapture();

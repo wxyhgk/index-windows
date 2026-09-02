@@ -53,6 +53,76 @@ public sealed record ShotPage(
     IReadOnlyList<ShotRecord> Items,
     ShotPageCursor? NextCursor);
 
+public interface IShotPageSource
+{
+    Task<ShotPage> GetPageAsync(
+        int limit = 300,
+        ShotPageCursor? cursor = null,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed record CapturedApplicationIdentity
+{
+    public CapturedApplicationIdentity(string name, string? appIdentifier)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("应用名称不能为空。", nameof(name));
+
+        Name = name.Trim();
+        AppIdentifier = string.IsNullOrWhiteSpace(appIdentifier)
+            ? null
+            : appIdentifier.Trim();
+    }
+
+    public string Name { get; }
+    public string? AppIdentifier { get; }
+    public string StableId => $"name:{Name.ToUpperInvariant()}";
+}
+
+public sealed record CapturedApplicationSummary(
+    CapturedApplicationIdentity Identity,
+    int CaptureCount,
+    DateTimeOffset LastCapturedAt,
+    IReadOnlyList<ShotRecord> Previews)
+{
+    public string Name => Identity.Name;
+    public string? AppIdentifier => Identity.AppIdentifier;
+    public string StableId => Identity.StableId;
+}
+
+public interface IShotApplicationSource
+{
+    Task<IReadOnlyList<CapturedApplicationSummary>> GetCapturedApplicationsAsync(
+        int previewLimit = 3,
+        CancellationToken cancellationToken = default);
+
+    Task<ShotPage> GetApplicationPageAsync(
+        CapturedApplicationIdentity application,
+        int limit = 300,
+        ShotPageCursor? cursor = null,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class CapturedApplicationPageSource(
+    IShotApplicationSource source,
+    CapturedApplicationIdentity application) : IShotPageSource
+{
+    private readonly IShotApplicationSource _source = source
+        ?? throw new ArgumentNullException(nameof(source));
+    private readonly CapturedApplicationIdentity _application = application
+        ?? throw new ArgumentNullException(nameof(application));
+
+    public Task<ShotPage> GetPageAsync(
+        int limit = 300,
+        ShotPageCursor? cursor = null,
+        CancellationToken cancellationToken = default)
+        => _source.GetApplicationPageAsync(
+            _application,
+            limit,
+            cursor,
+            cancellationToken);
+}
+
 public interface IShotCaptureWriter
 {
     Task<StoredCapture> SaveCaptureAsync(
@@ -62,18 +132,13 @@ public interface IShotCaptureWriter
         CancellationToken cancellationToken = default);
 }
 
-public interface IShotStore : IShotCaptureWriter
+public interface IShotStore : IShotCaptureWriter, IShotPageSource, IShotApplicationSource
 {
     Task<IReadOnlyList<ShotRecord>> GetRecentAsync(
         int limit = 300,
         CancellationToken cancellationToken = default);
 
     Task<long> GetCountAsync(CancellationToken cancellationToken = default);
-
-    Task<ShotPage> GetPageAsync(
-        int limit = 300,
-        ShotPageCursor? cursor = null,
-        CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<ShotRecord>> GetByIdsAsync(
         IReadOnlyCollection<long> shotIds,

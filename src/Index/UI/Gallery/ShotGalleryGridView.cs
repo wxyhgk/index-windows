@@ -21,6 +21,7 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
     private readonly ObservableCollection<ShotRow> _rows = [];
     private readonly List<ShotRecord> _loadedShots = [];
     private readonly ShotStore _store;
+    private readonly IShotPageSource _pageSource;
     private readonly GalleryTheme _theme;
     private readonly ScrollViewer _scrollViewer;
     private readonly ItemsRepeater _repeater;
@@ -39,10 +40,12 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
     public ShotGalleryGridView(
         ShotPage firstPage,
         ShotStore store,
-        GalleryTheme theme)
+        GalleryTheme theme,
+        IShotPageSource? pageSource = null)
     {
         _nextCursor = firstPage.NextCursor;
         _store = store;
+        _pageSource = pageSource ?? store;
         _theme = theme;
         AppendRows(firstPage.Items);
         _resizeTimer = DispatcherQueue.CreateTimer();
@@ -110,7 +113,7 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
         _isLoadingPage = true;
         try
         {
-            var page = await _store.GetPageAsync(
+            var page = await _pageSource.GetPageAsync(
                 PageSize,
                 cursor,
                 _lifetimeCancellation.Token);
