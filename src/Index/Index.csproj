@@ -38,14 +38,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="..\Index.Windows\OcrModels\v4\*.*">
-      <Link>models\v4\%(Filename)%(Extension)</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
-  </ItemGroup>
-
-  <ItemGroup>
     <Content Include="Assets\Index.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
