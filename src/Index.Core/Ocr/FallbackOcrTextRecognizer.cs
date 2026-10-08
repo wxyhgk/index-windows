@@ -6,18 +6,18 @@ namespace Index.Ocr;
 /// </summary>
 public sealed class FallbackOcrTextRecognizer : IOcrTextRecognizer
 {
-    private readonly IOcrTextRecognizer _primary;
+    private readonly IOcrTextRecognizer? _primary;
     private readonly IOcrTextRecognizer _fallback;
 
     public FallbackOcrTextRecognizer(
-        IOcrTextRecognizer primary,
+        IOcrTextRecognizer? primary,
         IOcrTextRecognizer fallback)
     {
-        _primary = primary ?? throw new ArgumentNullException(nameof(primary));
+        _primary = primary;
         _fallback = fallback ?? throw new ArgumentNullException(nameof(fallback));
     }
 
-    public bool IsAvailable => _primary.IsAvailable || _fallback.IsAvailable;
+    public bool IsAvailable => _primary?.IsAvailable ?? false || _fallback.IsAvailable;
 
     public async Task<OcrTextResult> RecognizeAsync(
         ReadOnlyMemory<byte> frozenPng,
@@ -25,11 +25,11 @@ public sealed class FallbackOcrTextRecognizer : IOcrTextRecognizer
         CancellationToken cancellationToken = default)
     {
         Exception? primaryFailure = null;
-        if (_primary.IsAvailable)
+        if (_primary is { IsAvailable: true } primary)
         {
             try
             {
-                return await _primary
+                return await primary
                     .RecognizeAsync(frozenPng, crop, cancellationToken)
                     .ConfigureAwait(false);
             }

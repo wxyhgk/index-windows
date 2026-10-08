@@ -41,11 +41,8 @@ public static class Program
     private static LibraryOrganizationStore? _libraryOrganization;
     private static PinWindowManager? _pinWindows;
     private static RecognitionPluginRegistry? _recognitionPlugins;
-    private static LocalRecognitionHost? _recognitionHost;
     private static SystemTrayIcon? _trayIcon;
     private static VirtualDisplayCaptureWorkflow? _virtualDisplayCapture;
-    private static PaddleOcrTextRecognizer? _paddleOcr;
-    private static Task? _ocrWarmupTask;
     private static Task? _virtualWindowCaptureTask;
     private static readonly object VirtualWindowCaptureGate = new();
     private static readonly CancellationTokenSource ApplicationLifetime = new();
@@ -66,9 +63,8 @@ public static class Program
                 _libraryOrganization = LibraryOrganizationStore.OpenDefaultAsync().GetAwaiter().GetResult();
                 _shortcutSettings = new ShortcutSettingsStore();
                 var clipboardWriter = new WindowsClipboardWriter();
-                _paddleOcr = new PaddleOcrTextRecognizer();
                 var ocrTextRecognizer = new FallbackOcrTextRecognizer(
-                    _paddleOcr,
+                    primary: null,
                     new WindowsOcrTextRecognizer());
                 var imageExporter = new WindowsImageExporter();
                 var clipboardReplaySuppression = new ClipboardReplaySuppression();
@@ -170,11 +166,10 @@ public static class Program
                 var libraryWorkspaceController = new LibraryWorkspaceController(
                     _shotStore,
                     _libraryOrganization);
-                _recognitionHost = new LocalRecognitionHost();
                 _recognitionPlugins = new RecognitionPluginRegistry(
                     new IRecognitionPlugin[]
                     {
-                        new MolGrapherClient(host: _recognitionHost)
+                        new MolGrapherClient()
                     });
                 _mainWindow = new MainWindow(
                     _coordinator,
@@ -191,7 +186,6 @@ public static class Program
                     editorSessions,
                     _recognitionPlugins);
                 _mainWindow.Activate();
-                StartOcrWarmup(_paddleOcr);
                 InitializeTrayIcon(_mainWindow);
                 _shortcutController = new GlobalShortcutController(
                     _shortcutSettings,
@@ -219,11 +213,7 @@ public static class Program
                     _clipboardHistory?.Dispose();
                     _clipboardPopup?.Close();
                     _pinWindows?.Dispose();
-                    _paddleOcr?.Dispose();
-                    _paddleOcr = null;
-                    _ocrWarmupTask = null;
                     _recognitionPlugins?.Dispose();
-                    _recognitionHost?.Dispose();
                     _trayIcon?.Dispose();
                     _trayIcon = null;
                 };
@@ -252,47 +242,6 @@ public static class Program
         "startup",
         "startup-failed",
         exception: error);
-
-    private static void StartOcrWarmup(PaddleOcrTextRecognizer recognizer)
-    {
-        _ocrWarmupTask = ObserveOcrWarmupAsync(recognizer, ApplicationLifetime.Token);
-    }
-
-    private static async Task ObserveOcrWarmupAsync(
-        PaddleOcrTextRecognizer recognizer,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Let the main window paint and become interactive before loading the ONNX sessions.
-            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-            var started = Stopwatch.GetTimestamp();
-            await recognizer.WarmUpAsync(cancellationToken).ConfigureAwait(false);
-            Diagnostics.Write(
-                AppDiagnosticLevel.Information,
-                "ocr",
-                "warmup-completed",
-                new Dictionary<string, string?>
-                {
-                    ["elapsedMilliseconds"] = Stopwatch
-                        .GetElapsedTime(started)
-                        .TotalMilliseconds
-                        .ToString("F0", System.Globalization.CultureInfo.InvariantCulture)
-                });
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            // OCR remains usable through lazy retry and the Windows OCR fallback.
-            Diagnostics.Write(
-                AppDiagnosticLevel.Warning,
-                "ocr",
-                "warmup-failed",
-                exception: error);
-        }
-    }
 
     private static void StartVirtualWindowCapture(VirtualWindowCaptureWorkflow workflow)
     {

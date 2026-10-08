@@ -14,12 +14,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.19" />
-    <PackageReference Include="RapidOcrNet" Version="4.1.0" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="OcrModels\v4\*.*" />
   </ItemGroup>
 
   <ItemGroup>
