@@ -55,7 +55,7 @@ jobs:
           $releases = Invoke-RestMethod -Uri "https://builds.dotnet.microsoft.com/dotnet/release-metadata/9.0/releases.json"
           $version = $releases.releases[0].PSObject.Properties['release-version'].Value
           $url = "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/$version/windowsdesktop-runtime-$version-win-x64.exe"
-          Write-Host "Downloading .NET Desktop Runtime $version: $url"
+          Write-Host "Downloading .NET Desktop Runtime ${version} from ${url}"
           Invoke-WebRequest -Uri $url -OutFile "installer\runtime\windowsdesktop-runtime-9.0-win-x64.exe"
 
       - name: Build installer
