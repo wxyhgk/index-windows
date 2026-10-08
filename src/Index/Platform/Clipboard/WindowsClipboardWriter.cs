@@ -50,7 +50,10 @@ public sealed class WindowsClipboardWriter : IClipboardWriter
         await InvokeOnDispatcherAsync(async () =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var stream = new InMemoryRandomAccessStream();
+            // The stream must outlive SetContent: SetBitmap/SetData defer
+            // reads until another process opens the RandomAccessStreamReference,
+            // so disposing it here would yield a blank paste.
+            var stream = new InMemoryRandomAccessStream();
             using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
             {
                 writer.WriteBytes(bytes);
