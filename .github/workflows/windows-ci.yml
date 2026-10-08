@@ -44,23 +44,36 @@ jobs:
           dotnet publish src/Index/Index.csproj `
             --configuration Release `
             --runtime win-x64 `
-            --self-contained true `
+            --self-contained false `
             --output artifacts/windows-x64 `
             -p:WindowsAppSDKSelfContained=true `
             -p:PublishSingleFile=false
 
-      - name: Package
+      - name: Download .NET 9 Desktop Runtime
         run: |
-          Compress-Archive -Path "artifacts/windows-x64/*" -DestinationPath "Index-windows-x64.zip" -Force
-          (Get-FileHash "Index-windows-x64.zip" -Algorithm SHA256).Hash | Out-File -Encoding utf8 "Index-windows-x64.zip.sha256"
+          New-Item -ItemType Directory -Force -Path installer\runtime
+          # Resolve the latest 9.0.x desktop runtime from the dotnet release API
+          $api = "https://api.nuget.org/v3-flatcontainer/microsoft.windowsdesktop.app.index.json"
+          $versions = Invoke-RestMethod -Uri $api
+          $latest9 = $versions.versions | Where-Object { $_ -match '^9\.0\.' } | Select-Object -Last 1
+          $url = "https://builds.dotnet.microsoft.com/dotnet/Runtime/$latest9/windowsdesktop-runtime-$latest9-win-x64.exe"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile "installer\runtime\windowsdesktop-runtime-9.0-win-x64.exe"
+
+      - name: Build installer
+        run: |
+          $version = "0.0.15"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=$version" `
+            "/DSourceDir=artifacts\windows-x64" `
+            "/DOutputDir=installer\output" `
+            installer\Index.iss
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Index-windows-x64
-          path: |
-            Index-windows-x64.zip
-            Index-windows-x64.zip.sha256
+          path: installer/output/Index-Setup-*-win-x64.exe
           retention-days: 30
 
   release:
@@ -86,14 +99,14 @@ jobs:
           $notes = @"
           ## Index $tag
 
-          Windows x64 self-contained build.
+          Windows x64 self-contained installer.
 
-          Download `Index-windows-x64.zip`, extract, and run `Index.exe`.
+          Download `Index-Setup-$tag-win-x64.exe` and run it to install.
           Requires Windows 11 (build 26100+).
           "@
+          $exe = Get-ChildItem "dist/Index-Setup-*-win-x64.exe" | Select-Object -First 1
           gh release create "$tag" `
             --title "Index $tag" `
             --notes "$notes" `
             --verify-tag `
-            dist/Index-windows-x64.zip `
-            dist/Index-windows-x64.zip.sha256
+            $exe.FullName
