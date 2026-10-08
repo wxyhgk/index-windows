@@ -61,10 +61,12 @@ jobs:
       - name: Build installer
         run: |
           $version = "0.0.15"
+          $sourceDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\windows-x64"
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE "installer\output"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             "/DAppVersion=$version" `
-            "/DSourceDir=artifacts\windows-x64" `
-            "/DOutputDir=installer\output" `
+            "/DSourceDir=$sourceDir" `
+            "/DOutputDir=$outputDir" `
             installer\Index.iss
 
       - name: Upload artifact
