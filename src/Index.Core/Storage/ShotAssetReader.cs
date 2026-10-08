@@ -28,4 +28,10 @@ public interface IShotAssetReader
         ShotRecord shot,
         CancellationToken cancellationToken = default)
         => ReadBestAvailableAsync(shot, cancellationToken);
+
+    /// <summary>Reads the original pixels with the latest complete annotation revision applied.</summary>
+    Task<ShotAssetReadResult> ReadRenderedAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default)
+        => ReadBestAvailableAsync(shot, cancellationToken);
 }

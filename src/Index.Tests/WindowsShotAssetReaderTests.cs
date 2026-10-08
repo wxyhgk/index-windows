@@ -1,4 +1,5 @@
 using Index.Platform;
+using Index.Annotation;
 using Index.Storage;
 using Microsoft.Data.Sqlite;
 using SkiaSharp;
@@ -120,6 +121,37 @@ public sealed class WindowsShotAssetReaderTests : IDisposable
         Assert.NotNull(result.Warning);
     }
 
+    [Fact]
+    public async Task RenderedAndPreviewAssetsApplyLatestAnnotationRevision()
+    {
+        var store = await ShotStore.OpenAsync(_root);
+        var layers = new Layers<ImageSpace>();
+        layers.Append(new Layer(
+            LayerKind.Rect,
+            new LRect(4, 4, 28, 18),
+            new LColor(1, 0, 0, 1),
+            4));
+        var saved = await store.SaveCaptureAsync(
+            MakePng(SKColors.CornflowerBlue, 48, 32),
+            new ShotCaptureMetadata
+            {
+                RegionX = 0,
+                RegionY = 0,
+                RegionWidth = 48,
+                RegionHeight = 32
+            },
+            layers);
+        var reader = new WindowsShotAssetReader(store);
+
+        var original = await reader.ReadBestAvailableAsync(saved.Shot);
+        var rendered = await reader.ReadRenderedAsync(saved.Shot);
+        var preview = await reader.ReadPreviewAsync(saved.Shot);
+
+        Assert.NotEqual(original.Data.ToArray(), rendered.Data.ToArray());
+        AssertAnnotated(rendered.Data);
+        AssertAnnotated(preview.Data);
+    }
+
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();
@@ -146,18 +178,29 @@ public sealed class WindowsShotAssetReaderTests : IDisposable
         RegionHeight: 10,
         OriginalExtension: "png");
 
-    private static byte[] MakePng(SKColor color)
-        => Encode(color, SKEncodedImageFormat.Png);
+    private static byte[] MakePng(SKColor color, int width = 2, int height = 2)
+        => Encode(color, SKEncodedImageFormat.Png, width, height);
 
     private static byte[] MakeJpeg(SKColor color)
-        => Encode(color, SKEncodedImageFormat.Jpeg);
+        => Encode(color, SKEncodedImageFormat.Jpeg, 2, 2);
 
-    private static byte[] Encode(SKColor color, SKEncodedImageFormat format)
+    private static byte[] Encode(
+        SKColor color,
+        SKEncodedImageFormat format,
+        int width,
+        int height)
     {
-        using var bitmap = new SKBitmap(2, 2);
+        using var bitmap = new SKBitmap(width, height);
         bitmap.Erase(color);
         using var image = SKImage.FromBitmap(bitmap);
         using var data = image.Encode(format, 100);
         return data.ToArray();
+    }
+
+    private static void AssertAnnotated(ReadOnlyMemory<byte> png)
+    {
+        using var bitmap = SKBitmap.Decode(png.ToArray());
+        Assert.NotNull(bitmap);
+        Assert.Contains(bitmap.Pixels, pixel => pixel.Red > 200 && pixel.Blue < 80);
     }
 }

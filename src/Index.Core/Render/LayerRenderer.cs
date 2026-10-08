@@ -33,6 +33,7 @@ public static class LayerRenderer
         foreach (var layer in layers)
         {
             if (layer.IsEffect) continue;
+            if (layer.Kind is LayerKind.Pixelate or LayerKind.Crop) continue;
             var descriptor = ToolRegistry.DescriptorFor(layer.Kind);
             if (descriptor is null) continue;
             if (descriptor.DrawsMerged) continue; // 已合并绘制
@@ -42,6 +43,79 @@ public static class LayerRenderer
                 layer.LineWidth > 0 ? layer.LineWidth : lineWidth,
                 layer.FontSize > 0 ? layer.FontSize : fontSize);
         }
+    }
+
+    /// <summary>
+    /// Applies every pixelate layer to a copy of the source bitmap. Layers use the
+    /// same top-left image-pixel coordinates as vector rendering; pixels outside the
+    /// normalized, clipped layer rectangles remain untouched.
+    /// </summary>
+    public static SKBitmap ApplyPixelate(
+        SKBitmap source,
+        IReadOnlyList<Layer> layers)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(layers);
+        var result = new SKBitmap(new SKImageInfo(
+            source.Width,
+            source.Height,
+            SKColorType.Bgra8888,
+            SKAlphaType.Premul));
+        using (var copyCanvas = new SKCanvas(result))
+        {
+            copyCanvas.Clear(SKColors.Transparent);
+            copyCanvas.DrawBitmap(source, 0, 0);
+            copyCanvas.Flush();
+        }
+
+        foreach (var layer in layers.Where(item => item.Kind == LayerKind.Pixelate))
+        {
+            var rect = layer.Rect.Standardized();
+            int left = Math.Clamp((int)Math.Floor(rect.MinX), 0, source.Width);
+            int top = Math.Clamp((int)Math.Floor(rect.MinY), 0, source.Height);
+            int right = Math.Clamp((int)Math.Ceiling(rect.MaxX), 0, source.Width);
+            int bottom = Math.Clamp((int)Math.Ceiling(rect.MaxY), 0, source.Height);
+            int width = right - left;
+            int height = bottom - top;
+            if (width < 2 || height < 2)
+                continue;
+
+            double requestedScale = Math.Max(0.25, layer.BlockScale ?? 1);
+            int blockSize = Math.Max(
+                4,
+                (int)Math.Round(Math.Max(6, Math.Min(width, height) / 12d * requestedScale)));
+            int smallWidth = Math.Max(1, width / blockSize);
+            int smallHeight = Math.Max(1, height / blockSize);
+            using var small = new SKBitmap(
+                smallWidth,
+                smallHeight,
+                SKColorType.Bgra8888,
+                SKAlphaType.Premul);
+            using (var downCanvas = new SKCanvas(small))
+            using (var currentImage = SKImage.FromBitmap(result))
+            using (var paint = new SKPaint())
+            {
+                downCanvas.DrawImage(
+                    currentImage,
+                    new SKRect(left, top, right, bottom),
+                    new SKRect(0, 0, smallWidth, smallHeight),
+                    new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear),
+                    paint);
+                downCanvas.Flush();
+            }
+
+            using var resultCanvas = new SKCanvas(result);
+            using var smallImage = SKImage.FromBitmap(small);
+            using var upPaint = new SKPaint();
+            resultCanvas.DrawImage(
+                smallImage,
+                new SKRect(left, top, right, bottom),
+                new SKSamplingOptions(SKFilterMode.Nearest),
+                upPaint);
+            resultCanvas.Flush();
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -126,14 +200,24 @@ public static class LayerRenderer
 
         using var small = new SKBitmap(smallW, smallH, SKColorType.Rgba8888, SKAlphaType.Premul);
         using var canvas = new SKCanvas(small);
-        using var paint = new SKPaint { FilterQuality = SKFilterQuality.Medium };
-        canvas.DrawBitmap(source, new SKRect(0, 0, smallW, smallH), paint);
+        using var sourceImage = SKImage.FromBitmap(source);
+        using var paint = new SKPaint();
+        canvas.DrawImage(
+            sourceImage,
+            new SKRect(0, 0, smallW, smallH),
+            new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear),
+            paint);
 
         // 放大回原始尺寸（最近邻插值）
         using var result = new SKBitmap(source.Width, source.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
         using var resultCanvas = new SKCanvas(result);
-        using var upPaint = new SKPaint { FilterQuality = SKFilterQuality.None };
-        resultCanvas.DrawBitmap(small, new SKRect(0, 0, source.Width, source.Height), upPaint);
+        using var smallImage = SKImage.FromBitmap(small);
+        using var upPaint = new SKPaint();
+        resultCanvas.DrawImage(
+            smallImage,
+            new SKRect(0, 0, source.Width, source.Height),
+            new SKSamplingOptions(SKFilterMode.Nearest),
+            upPaint);
 
         using var image = SKImage.FromBitmap(result);
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);

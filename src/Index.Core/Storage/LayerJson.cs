@@ -31,6 +31,30 @@ internal static class LayerJson
             Options);
     }
 
+    public static Layers<ImageSpace> Deserialize(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        var persisted = JsonSerializer.Deserialize<PersistedLayer[]>(json, Options)
+            ?? throw new JsonException("The annotation revision is empty.");
+        var layers = new Layers<ImageSpace>();
+        foreach (var item in persisted)
+        {
+            layers.Append(new Layer(
+                item.Kind,
+                new LRect(item.Rect.X, item.Rect.Y, item.Rect.W, item.Rect.H),
+                new LColor(item.Color.R, item.Color.G, item.Color.B, item.Color.A),
+                item.LineWidth,
+                item.Text,
+                item.FontSize)
+            {
+                Id = item.Id,
+                BlockScale = item.BlockScale,
+                Dim = item.Dim
+            });
+        }
+        return layers;
+    }
+
     // 不直接序列化领域对象：Layer/LRect 上有 HandleBounds、MinX 等计算属性，
     // 它们不是跨平台 layers-v1 契约的一部分。
     private sealed record PersistedLayer(

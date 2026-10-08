@@ -69,9 +69,23 @@ public sealed class MainNavigationStateTests
         Assert.Equal(3, refreshGeneration);
     }
 
+    [Fact]
+    public void EditorReturnsToItsSourceWorkspace()
+    {
+        var state = new MainNavigationState();
+        state.ShowPage(MainNavigationPage.Apps);
+
+        state.ShowEditor();
+
+        Assert.Equal(MainNavigationPage.EditorWorkspace, state.Page);
+        Assert.True(state.IsAppsWorkspace);
+        Assert.Equal(MainNavigationPage.Apps, state.ReturnFromEditor());
+    }
+
     [Theory]
     [InlineData(MainNavigationPage.Library)]
     [InlineData(MainNavigationPage.PreviewWorkspace)]
+    [InlineData(MainNavigationPage.EditorWorkspace)]
     public void GenericPageTransitionRejectsStatefulWorkspacePages(MainNavigationPage page)
     {
         var state = new MainNavigationState();

@@ -3,6 +3,7 @@ using Index.Storage;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace Index.UI.Gallery;
 
@@ -26,19 +27,19 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         GalleryTheme theme)
     {
         _assets = assets ?? throw new ArgumentNullException(nameof(assets));
-        _commands = commands;
+        _commands = commands ?? throw new ArgumentNullException(nameof(commands));
         _theme = theme;
         _dispatcher = DispatcherQueue;
-        Width = 300;
+        Width = 276;
         VerticalAlignment = VerticalAlignment.Stretch;
-        _content = new StackPanel { Spacing = 12 };
+        _content = new StackPanel { Spacing = 9 };
         Content = new Border
         {
             Background = theme.Card,
             BorderBrush = theme.CardBorder,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(16),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12),
             Child = new ScrollViewer
             {
                 Content = _content,
@@ -52,6 +53,7 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
     public event Action<ShotRecord>? ShotDeleted;
     public event Action<ShotRecord, bool>? FavoriteChanged;
     public event Action<ShotRecord>? PreviewRequested;
+    public event Action<ShotRecord>? EditRequested;
 
     public void ShowShot(ShotRecord shot)
     {
@@ -64,16 +66,19 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         _content.Children.Add(new TextBlock
         {
             Text = shot.WindowTitle ?? $"截图 {shot.Id}",
-            FontSize = 20,
+            FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = _theme.Text,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 2
         });
         var preview = new Button
         {
-            Height = 190,
+            Height = 150,
             Padding = new Thickness(0),
-            BorderThickness = new Thickness(0),
+            BorderThickness = new Thickness(1),
+            BorderBrush = _theme.CardBorder,
+            CornerRadius = new CornerRadius(8),
             Background = _theme.ThumbnailBackground,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch,
@@ -82,20 +87,11 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         ToolTipService.SetToolTip(preview, "点击预览原图 · Space");
         preview.Click += (_, _) => PreviewRequested?.Invoke(shot);
         _content.Children.Add(preview);
-        _content.Children.Add(Metadata("尺寸", $"{shot.PixelWidth} × {shot.PixelHeight}"));
-        _content.Children.Add(Metadata("截图时间", shot.CapturedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")));
-        _content.Children.Add(Metadata("来源应用", shot.AppName ?? "未知"));
-        if (!string.IsNullOrWhiteSpace(shot.WindowTitle))
-            _content.Children.Add(Metadata("窗口", shot.WindowTitle));
-        if (!string.IsNullOrWhiteSpace(shot.SourceUrl))
-            _content.Children.Add(Metadata("网页", shot.SourceUrl));
+        _content.Children.Add(SectionLabel("信息"));
+        _content.Children.Add(MetadataCard(shot));
 
-        var favorite = new Button
-        {
-            Content = "正在读取收藏状态…",
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            IsEnabled = false
-        };
+        var favorite = CreateActionButton("\uE734", "正在读取收藏状态…");
+        favorite.IsEnabled = false;
         var tags = new TextBlock
         {
             FontSize = 12,
@@ -107,27 +103,39 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         _content.Children.Add(tags);
         _ = LoadOrganizationAsync(shot, favorite, tags, generation);
 
-        var actions = new Grid { ColumnSpacing = 8, RowSpacing = 8 };
+        _content.Children.Add(SectionLabel("操作"));
+        var actions = new Grid { ColumnSpacing = 6, RowSpacing = 6 };
         actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        AddAction(actions, "复制", 0, 0,
+        actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var edit = CreateActionButton("\uE70F", "编辑标注");
+        edit.HorizontalContentAlignment = HorizontalAlignment.Center;
+        edit.Click += (_, _) => EditRequested?.Invoke(shot);
+        Grid.SetColumnSpan(edit, 2);
+        actions.Children.Add(edit);
+        AddAction(actions, "\uE8C8", "复制图片", 0, 1,
             () => RunAsync(
                 () => _commands.CopyAsync(shot, _lifetimeCancellation.Token),
                 "已复制到剪贴板"));
-        AddAction(actions, "导出", 1, 0, () => ExportAsync(shot));
-        AddAction(actions, "打开原图", 0, 1,
+        AddAction(actions, "\uE71B", "复制路径", 1, 1,
+            () => RunAsync(async () =>
+            {
+                await _commands.CopyOriginalPathAsync(shot, _lifetimeCancellation.Token);
+                return "已复制原图路径";
+            }));
+        AddAction(actions, "\uE74E", "导出", 0, 2, () => ExportAsync(shot));
+        AddAction(actions, "\uE838", "打开原图", 1, 2,
             () => RunAsync(
                 () => _commands.OpenOriginalAsync(shot, _lifetimeCancellation.Token),
                 "已打开原图"));
-        AddAction(actions, "删除", 1, 1, () => ConfirmDeleteAsync(shot), destructive: true);
         if (!string.IsNullOrWhiteSpace(shot.SourceUrl))
-        {
-            actions.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            AddAction(actions, "打开网页", 0, 2,
+            AddAction(actions, "\uE774", "打开网页", 0, 3,
                 () => Run(() => _commands.OpenSource(shot), "已打开来源网页"));
-        }
+        AddAction(actions, "\uE74D", "删除", 1, 3,
+            () => ConfirmDeleteAsync(shot), destructive: true);
         _content.Children.Add(actions);
         _content.Children.Add(new TextBlock
         {
@@ -150,7 +158,7 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
             var tags = await _commands.GetTagsAsync(shot, _lifetimeCancellation.Token);
             if (generation != _shotGeneration || _shot?.Id != shot.Id) return;
 
-            favoriteButton.Content = isFavorite ? "★ 已收藏" : "☆ 收藏";
+            SetActionButtonTitle(favoriteButton, isFavorite ? "已收藏" : "收藏");
             favoriteButton.IsEnabled = true;
             favoriteButton.Click += async (_, _) =>
             {
@@ -163,7 +171,7 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
                         isFavorite,
                         _lifetimeCancellation.Token);
                     if (generation != _shotGeneration || _shot?.Id != shot.Id) return;
-                    favoriteButton.Content = isFavorite ? "★ 已收藏" : "☆ 收藏";
+                    SetActionButtonTitle(favoriteButton, isFavorite ? "已收藏" : "收藏");
                     FavoriteChanged?.Invoke(shot, isFavorite);
                     SetStatus(isFavorite ? "已加入快速收藏" : "已取消收藏");
                 }
@@ -188,7 +196,7 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         catch (Exception error)
         {
             if (generation != _shotGeneration || _shot?.Id != shot.Id) return;
-            favoriteButton.Content = "收藏状态读取失败";
+            SetActionButtonTitle(favoriteButton, "收藏状态读取失败");
             SetStatus(error.Message);
         }
     }
@@ -216,30 +224,71 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         });
     }
 
-    private StackPanel Metadata(string label, string value) => new()
+    private TextBlock SectionLabel(string text) => new()
     {
-        Spacing = 2,
-        Children =
-        {
-            new TextBlock { Text = label, FontSize = 11, Foreground = _theme.Muted },
-            new TextBlock { Text = value, FontSize = 13, Foreground = _theme.Text, TextWrapping = TextWrapping.Wrap }
-        }
+        Text = text,
+        FontSize = 11,
+        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+        Foreground = _theme.Muted,
+        Margin = new Thickness(1, 2, 0, 0)
     };
+
+    private Border MetadataCard(ShotRecord shot)
+    {
+        var rows = new StackPanel { Spacing = 5 };
+        rows.Children.Add(MetadataRow("尺寸", $"{shot.PixelWidth} × {shot.PixelHeight}"));
+        rows.Children.Add(MetadataRow(
+            "时间",
+            shot.CapturedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")));
+        rows.Children.Add(MetadataRow("应用", shot.AppName ?? "未知"));
+        if (!string.IsNullOrWhiteSpace(shot.SourceUrl))
+            rows.Children.Add(MetadataRow("网页", shot.SourceUrl));
+        return new Border
+        {
+            Background = _theme.Panel,
+            BorderBrush = _theme.CardBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Padding = new Thickness(9, 7, 9, 7),
+            Child = rows
+        };
+    }
+
+    private Grid MetadataRow(string label, string value)
+    {
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontSize = 11,
+            Foreground = _theme.Muted
+        });
+        var valueText = new TextBlock
+        {
+            Text = value,
+            FontSize = 12,
+            Foreground = _theme.Text,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 2
+        };
+        Grid.SetColumn(valueText, 1);
+        row.Children.Add(valueText);
+        return row;
+    }
 
     private void AddAction(
         Grid host,
+        string glyph,
         string title,
         int column,
         int row,
         Func<Task> action,
         bool destructive = false)
     {
-        var button = new Button
-        {
-            Content = title,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Foreground = destructive ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.IndianRed) : _theme.Text
-        };
+        var button = CreateActionButton(glyph, title, destructive);
         button.Click += async (_, _) =>
         {
             try
@@ -257,6 +306,59 @@ internal sealed class ShotDetailPane : UserControl, IDisposable
         Grid.SetColumn(button, column);
         Grid.SetRow(button, row);
         host.Children.Add(button);
+    }
+
+    private Button CreateActionButton(string glyph, string title, bool destructive = false)
+    {
+        Brush foreground = destructive
+            ? new SolidColorBrush(Microsoft.UI.Colors.IndianRed)
+            : _theme.Text;
+        return new Button
+        {
+            MinHeight = 36,
+            Padding = new Thickness(9, 5, 9, 5),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Background = _theme.Panel,
+            BorderBrush = _theme.CardBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Foreground = foreground,
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new FontIcon
+                    {
+                        Glyph = glyph,
+                        FontFamily = new FontFamily("Segoe Fluent Icons"),
+                        FontSize = 14,
+                        Foreground = foreground
+                    },
+                    new TextBlock
+                    {
+                        Text = title,
+                        FontSize = 12,
+                        Foreground = foreground,
+                        VerticalAlignment = VerticalAlignment.Center
+                    }
+                }
+            }
+        };
+    }
+
+    private static void SetActionButtonTitle(Button button, string title)
+    {
+        if (button.Content is StackPanel content
+            && content.Children.OfType<TextBlock>().FirstOrDefault() is { } label)
+        {
+            label.Text = title;
+            return;
+        }
+        button.Content = title;
     }
 
     private async Task ExportAsync(ShotRecord shot)

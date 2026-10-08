@@ -257,6 +257,46 @@ public sealed partial class ShotStore
         return result;
     }
 
+    public async Task<ShotRevisionSnapshot?> GetLatestRevisionSnapshotAsync(
+        long shotId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _database.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, parentID, createdAt, note, layersJSON
+            FROM revision
+            WHERE shotID = $shotID
+            ORDER BY id DESC
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("$shotID", shotId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+        return ReadRevisionSnapshot(reader);
+    }
+
+    public async Task<IReadOnlyList<ShotRevisionSnapshot>> GetRevisionHistoryAsync(
+        long shotId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _database.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, parentID, createdAt, note, layersJSON
+            FROM revision
+            WHERE shotID = $shotID
+            ORDER BY id ASC
+            """;
+        command.Parameters.AddWithValue("$shotID", shotId);
+        var result = new List<ShotRevisionSnapshot>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            result.Add(ReadRevisionSnapshot(reader));
+        return result;
+    }
+
     public async Task<RevisionRecord> AppendRevisionAsync(
         long shotId,
         Layers<ImageSpace> layers,
@@ -425,6 +465,15 @@ public sealed partial class ShotStore
         reader.GetInt64(0), reader.GetInt64(1), reader.IsDBNull(2) ? null : reader.GetInt64(2),
         DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture),
         NullableString(reader, 4), reader.GetString(5));
+
+    private static ShotRevisionSnapshot ReadRevisionSnapshot(SqliteDataReader reader) => new(
+        reader.GetInt64(0),
+        LayerJson.Deserialize(reader.GetString(4)))
+    {
+        ParentRevisionId = reader.IsDBNull(1) ? null : reader.GetInt64(1),
+        CreatedAt = DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture),
+        Note = NullableString(reader, 3)
+    };
 
     private static string? NullableString(SqliteDataReader reader, int ordinal)
         => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

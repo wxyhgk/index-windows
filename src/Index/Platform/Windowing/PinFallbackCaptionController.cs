@@ -76,6 +76,30 @@ internal sealed class PinFallbackCaptionController : IDisposable
                 Math.Max(1, size.Height))]);
     }
 
+    public void EnableClientInteraction()
+    {
+        if (_disposed)
+            return;
+
+        if (_nonClientInput is not null)
+        {
+            try
+            {
+                _nonClientInput.ClearRegionRects(NonClientRegionKind.Caption);
+            }
+            catch (Exception error)
+            {
+                System.Diagnostics.Debug.WriteLine($"Pin caption client transition skipped: {error}");
+            }
+        }
+
+        if (!_usesPointerFallback)
+        {
+            _usesPointerFallback = true;
+            _dragSurface.PointerPressed += OnPointerPressed;
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)

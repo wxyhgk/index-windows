@@ -92,6 +92,17 @@
 - 上游：[SunnyCapturer/FLIPPED](https://github.com/SunnyCapturer/FLIPPED)，
   [LICENSE](https://github.com/SunnyCapturer/FLIPPED/blob/master/LICENSE)。
 
+## RapidOcrNet、RapidOCR 与 PaddleOCR 模型
+
+- 用途：Windows x64 上的离线截图文字检测、识别与逐词坐标输出；系统 OCR 不可用时仍可工作。
+- 当前版本：RapidOcrNet 4.1.0（见 `src/Index.Windows/Index.Windows.csproj`）。
+- 当前随附模型：PP-OCRv4 mobile 简体中文轻量检测与识别模型（约 16.2 MB）。
+- 许可证：RapidOcrNet、RapidOCR 及 PaddleOCR 模型均为 Apache License 2.0；RapidOcrNet 的
+  NOTICE 还列明其包含的 PdfPig 与 PContour 派生实现。
+- 上游：[BobLd/RapidOcrNet](https://github.com/BobLd/RapidOcrNet)、
+  [RapidAI/RapidOCR](https://github.com/RapidAI/RapidOCR)、
+  [PaddlePaddle/PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)。
+
 ## Apple 系统框架
 
 AppKit、ScreenCaptureKit、Vision、Core ML、WebKit 等由 macOS 提供，不作为第三方源码随本仓库

@@ -1,8 +1,12 @@
 using System.Runtime.InteropServices.WindowsRuntime;
 using Index.Actions;
+using Index.Ocr;
 using Index.Pin;
+using Index.Platform.Clipboard;
+using Index.Platform.Diagnostics;
 using Index.Platform.Windowing;
 using Index.Toolbar;
+using Index.UI.Editor;
 using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
@@ -18,30 +22,43 @@ namespace Index.UI.Pin;
 internal sealed class PinWindow : Window, ICaptureActionHost
 {
     private readonly PinWindowModel _model;
+    private readonly IAppDiagnostics _diagnostics;
     private readonly PinActionSession _actionSession;
     private readonly ToolbarRegistry _toolbarRegistry = new();
     private readonly ToolbarContext _toolbarContext;
     private readonly Grid _root;
     private readonly Border _imageBorder;
     private readonly Image _image;
+    private readonly OcrTextOverlayView _ocrOverlay;
     private readonly PinToolbarWindow _toolbarWindow;
     private readonly TextBlock _status;
     private readonly PinInteractionState _interaction;
     private readonly NativePinPresentation _nativePresentation;
+    private readonly PinOcrInteractionController _ocrController;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _toolbarHideTimer;
     private PinFallbackCaptionController? _fallbackCaption;
     private PinRect? _pendingVisibleFrame;
     private int _presentationStage;
     private TaskCompletionSource? _presentationCompletion;
+    private bool _pinHovered;
+    private bool _toolbarHovered;
     private bool _closed;
 
-    public PinWindow(PinWindowModel model, CaptureActionRegistry actions)
+    public PinWindow(
+        PinWindowModel model,
+        CaptureActionRegistry actions,
+        IOcrTextRecognizer ocrTextRecognizer,
+        IClipboardWriter clipboardWriter,
+        IAppDiagnostics diagnostics)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
         _interaction = new PinInteractionState(model.Pixels.Width, model.Pixels.Height);
         _nativePresentation = new NativePinPresentation(model.Pixels);
         _nativePresentation.FrameChanged += OnNativeFrameChanged;
         _nativePresentation.WheelChanged += OnNativeWheelChanged;
         _nativePresentation.CloseRequested += OnNativeCloseRequested;
+        _nativePresentation.HoverChanged += OnNativeHoverChanged;
         _actionSession = new PinActionSession(
             actions ?? throw new ArgumentNullException(nameof(actions)),
             model.Artifact,
@@ -60,7 +77,8 @@ internal sealed class PinWindow : Window, ICaptureActionHost
             new Annotation.AnnotationState(),
             ToolbarScope.Pinned,
             PerformCommand,
-            isActionExecuting: _actionSession.IsExecuting);
+            isActionExecuting: IsToolbarCommandExecuting,
+            isActionEnabled: IsToolbarCommandEnabled);
 
         _image = new Image
         {
@@ -75,6 +93,11 @@ internal sealed class PinWindow : Window, ICaptureActionHost
         {
             Background = new SolidColorBrush(Colors.Transparent),
             Child = _image
+        };
+        _ocrOverlay = new OcrTextOverlayView(hitTargetsOnly: true)
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top
         };
         _toolbarWindow = new PinToolbarWindow(_toolbarRegistry, _toolbarContext);
 
@@ -105,14 +128,42 @@ internal sealed class PinWindow : Window, ICaptureActionHost
             IsTabStop = true
         };
         _root.Children.Add(_imageBorder);
+        _root.Children.Add(_ocrOverlay);
         _root.Children.Add(statusPlate);
         Content = _root;
 
+        _toolbarHideTimer = _root.DispatcherQueue.CreateTimer();
+        _toolbarHideTimer.Interval = TimeSpan.FromMilliseconds(280);
+        _toolbarHideTimer.IsRepeating = false;
+        _toolbarHideTimer.Tick += OnToolbarHideTimerTick;
+        _toolbarWindow.HoverChanged += OnToolbarHoverChanged;
+
+        _ocrController = new PinOcrInteractionController(
+            model,
+            ocrTextRecognizer,
+            clipboardWriter,
+            diagnostics,
+            _nativePresentation,
+            _ocrOverlay,
+            _root.DispatcherQueue,
+            () => (_root.ActualWidth, _root.ActualHeight),
+            () => _fallbackCaption?.EnableClientInteraction(),
+            UpdateSelectionStatus,
+            UpdateStatus,
+            RefreshToolbar,
+            Dismiss);
+
+        _root.PointerEntered += OnRootPointerEntered;
+        _root.PointerExited += OnRootPointerExited;
         _root.PointerWheelChanged += OnPointerWheelChanged;
         _root.KeyDown += OnKeyDown;
+        _root.SizeChanged += OnRootSizeChanged;
         Activated += (_, _) => _root.Focus(FocusState.Programmatic);
         Closed += OnClosed;
     }
+
+    public void StartAutomaticOcr()
+        => _ocrController.Start();
 
     public Task ShowAsync()
     {
@@ -154,7 +205,11 @@ internal sealed class PinWindow : Window, ICaptureActionHost
             _root,
             _toolbarWindow.Hide,
             _toolbarWindow.MoveAdjacent,
-            _toolbarWindow.ShowAdjacent);
+            frame =>
+            {
+                _toolbarWindow.MoveAdjacent(frame);
+                SetPinHovered(true);
+            });
         _fallbackCaption.Start();
         UpdateStatus();
         return _presentationCompletion.Task;
@@ -165,7 +220,7 @@ internal sealed class PinWindow : Window, ICaptureActionHost
         try
         {
             _nativePresentation.Show(initial, _interaction.OpacityByte);
-            _toolbarWindow.Show(
+            _toolbarWindow.Initialize(
                 _nativePresentation.Handle,
                 _nativePresentation.CurrentFrame);
             return true;
@@ -193,7 +248,7 @@ internal sealed class PinWindow : Window, ICaptureActionHost
             PinWindowHost.MoveAndResize(this, visibleFrame);
             _fallbackCaption?.UpdateCaptionRegion();
             PinWindowHost.SetAlwaysOnTop(this, true);
-            _toolbarWindow.Show(this, visibleFrame);
+            _toolbarWindow.Initialize(this, visibleFrame);
             _presentationCompletion?.TrySetResult();
         }
     }
@@ -268,7 +323,7 @@ internal sealed class PinWindow : Window, ICaptureActionHost
             PinWindowHost.MoveAndResize(this, next);
             _fallbackCaption?.UpdateCaptionRegion();
         }
-        _toolbarWindow.ShowAdjacent(displayFrame);
+        _toolbarWindow.MoveAdjacent(displayFrame);
         UpdateStatus();
     }
 
@@ -290,12 +345,17 @@ internal sealed class PinWindow : Window, ICaptureActionHost
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        bool controlDown = InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Control)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+        if (_ocrController.HandleKey(e.Key, controlDown))
+        {
+            e.Handled = true;
+            return;
+        }
+
         switch (e.Key)
         {
-            case VirtualKey.Escape:
-                Dismiss();
-                e.Handled = true;
-                break;
             case VirtualKey.Add:
                 ApplyZoom(_interaction.Zoom * PinWindowGeometry.WheelStep);
                 e.Handled = true;
@@ -313,10 +373,36 @@ internal sealed class PinWindow : Window, ICaptureActionHost
 
     private async void PerformCommand(string commandId)
     {
-        var result = await _actionSession.ExecuteAsync(commandId);
-        if (result.Status == CaptureActionExecutionStatus.Failed)
-            System.Diagnostics.Debug.WriteLine($"Pin action {commandId} failed: {result.Error}");
+        try
+        {
+            if (commandId == ToolbarCommandIds.CopyText)
+            {
+                _ocrController.CopyAvailableText();
+                return;
+            }
+
+            var result = await _actionSession.ExecuteAsync(commandId);
+            if (result.Status == CaptureActionExecutionStatus.Failed)
+                System.Diagnostics.Debug.WriteLine($"Pin action {commandId} failed: {result.Error}");
+        }
+        catch (Exception error)
+        {
+            _diagnostics.Write(
+                AppDiagnosticLevel.Warning,
+                "pin.toolbar",
+                "command-failed",
+                new Dictionary<string, string?> { ["commandId"] = commandId },
+                error);
+        }
     }
+
+    private bool IsToolbarCommandExecuting(string commandId)
+        => commandId == ToolbarCommandIds.CopyText
+            ? false
+            : _actionSession.IsExecuting(commandId);
+
+    private bool IsToolbarCommandEnabled(string commandId)
+        => commandId != ToolbarCommandIds.CopyText || _ocrController.CanCopyText;
 
     private void OnActionExecutionChanged(string id)
     {
@@ -328,7 +414,7 @@ internal sealed class PinWindow : Window, ICaptureActionHost
 
     private void RefreshToolbar()
     {
-        _toolbarWindow.Refresh(CurrentDisplayFrame());
+        TryUpdateToolbar(() => _toolbarWindow.Refresh(CurrentDisplayFrame()), "refresh-failed");
     }
 
     private PinRect CurrentDisplayFrame() =>
@@ -344,16 +430,98 @@ internal sealed class PinWindow : Window, ICaptureActionHost
     private void OnNativeFrameChanged(PinRect frame) =>
         _toolbarWindow.MoveAdjacent(frame);
 
+    private void OnNativeHoverChanged(bool hovering)
+    {
+        // NativePinSurface raises this from its WndProc. Even when that happens on the UI thread,
+        // defer WinUI window operations until the native message has fully unwound.
+        _root.DispatcherQueue.TryEnqueue(() => SetPinHovered(hovering));
+    }
+
+    private void OnRootPointerEntered(object sender, PointerRoutedEventArgs args)
+        => SetPinHovered(true);
+
+    private void OnRootPointerExited(object sender, PointerRoutedEventArgs args)
+        => SetPinHovered(false);
+
+    private void OnToolbarHoverChanged(bool hovering)
+    {
+        _toolbarHovered = hovering;
+        UpdateToolbarVisibility();
+    }
+
+    private void SetPinHovered(bool hovering)
+    {
+        _pinHovered = hovering;
+        UpdateToolbarVisibility();
+    }
+
+    private void UpdateToolbarVisibility()
+    {
+        if (_closed)
+            return;
+
+        if (_pinHovered || _toolbarHovered)
+        {
+            _toolbarHideTimer.Stop();
+            TryUpdateToolbar(
+                () => _toolbarWindow.ShowAdjacent(CurrentDisplayFrame()),
+                "show-failed");
+            return;
+        }
+
+        _toolbarHideTimer.Stop();
+        _toolbarHideTimer.Start();
+    }
+
+    private void OnToolbarHideTimerTick(
+        Microsoft.UI.Dispatching.DispatcherQueueTimer sender,
+        object args)
+    {
+        sender.Stop();
+        if (!_pinHovered && !_toolbarHovered)
+            TryUpdateToolbar(_toolbarWindow.Hide, "hide-failed");
+    }
+
+    private void TryUpdateToolbar(Action action, string eventName)
+    {
+        if (_closed)
+            return;
+
+        try
+        {
+            action();
+        }
+        catch (Exception error)
+        {
+            _diagnostics.Write(
+                AppDiagnosticLevel.Warning,
+                "pin.toolbar",
+                eventName,
+                exception: error);
+        }
+    }
+
     private void OnNativeWheelChanged(int delta, bool controlDown) =>
         HandleNativeWheel(delta, controlDown);
 
     private void OnNativeCloseRequested() => Dismiss();
+
+    private void OnRootSizeChanged(object sender, SizeChangedEventArgs args)
+        => _ocrController.ResizeFallback(args.NewSize.Width, args.NewSize.Height);
+
+    private void UpdateSelectionStatus(int wordCount)
+    {
+        _status.Text = wordCount > 0
+            ? $"已选 {wordCount} 项 · Ctrl+C 复制"
+            : $"{_interaction.Zoom * 100:0}%";
+    }
 
     private void DisposeNativePresentation()
     {
         _nativePresentation.FrameChanged -= OnNativeFrameChanged;
         _nativePresentation.WheelChanged -= OnNativeWheelChanged;
         _nativePresentation.CloseRequested -= OnNativeCloseRequested;
+        _nativePresentation.HoverChanged -= OnNativeHoverChanged;
         _nativePresentation.Dispose();
     }
 
@@ -362,6 +530,13 @@ internal sealed class PinWindow : Window, ICaptureActionHost
     private void OnClosed(object sender, WindowEventArgs args)
     {
         _closed = true;
+        _toolbarHideTimer.Stop();
+        _toolbarHideTimer.Tick -= OnToolbarHideTimerTick;
+        _toolbarWindow.HoverChanged -= OnToolbarHoverChanged;
+        _root.PointerEntered -= OnRootPointerEntered;
+        _root.PointerExited -= OnRootPointerExited;
+        _ocrController.Dispose();
+        _root.SizeChanged -= OnRootSizeChanged;
         _toolbarWindow.Dismiss();
         DisposeNativePresentation();
         if (_presentationStage != 0)

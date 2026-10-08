@@ -29,6 +29,7 @@ public static class BuiltinToolbarControls
     public static void RegisterCaptureDefaults(
         ToolbarRegistry registry)
     {
+        registry.Register(new LiveTextToolbarControl());
         registry.Register(new CommandToolbarControl(
             ToolbarCommandIds.Pin, "📌", "钉图", ToolbarGroup.Actions, 0, false, ToolbarScope.Capture));
         registry.Register(new CommandToolbarControl(
@@ -50,10 +51,18 @@ public static class BuiltinToolbarControls
     public static void RegisterPinnedDefaults(ToolbarRegistry registry)
     {
         registry.Register(new CommandToolbarControl(
-            ToolbarCommandIds.Copy, "⧉", "复制", ToolbarGroup.Actions, 0, false, ToolbarScope.Pinned));
+            ToolbarCommandIds.CopyText,
+            "文",
+            "复制文字",
+            ToolbarGroup.Actions,
+            0,
+            false,
+            ToolbarScope.Pinned));
         registry.Register(new CommandToolbarControl(
-            ToolbarCommandIds.Save, "↓", "保存到桌面", ToolbarGroup.Actions, 1, false, ToolbarScope.Pinned));
+            ToolbarCommandIds.Copy, "⧉", "复制图片", ToolbarGroup.Actions, 1, false, ToolbarScope.Pinned));
         registry.Register(new CommandToolbarControl(
-            ToolbarCommandIds.Close, "×", "关闭", ToolbarGroup.Actions, 2, false, ToolbarScope.Pinned));
+            ToolbarCommandIds.Save, "↓", "保存到桌面", ToolbarGroup.Actions, 2, false, ToolbarScope.Pinned));
+        registry.Register(new CommandToolbarControl(
+            ToolbarCommandIds.Close, "×", "关闭", ToolbarGroup.Actions, 3, false, ToolbarScope.Pinned));
     }
 }

@@ -99,6 +99,7 @@ public sealed partial class MainWindow
                     _theme);
                 Action<ShotRecord> galleryPreview = shot => OpenPreview(gallery, shot);
                 Action<ShotRecord> detailPreview = shot => OpenPreview(gallery, shot);
+                Action<ShotRecord> detailEdit = shot => OpenEditor(shot);
                 Action<ShotRecord> shotDeleted = deletedShot =>
                 {
                     var nextGeneration = _navigation.Refresh();
@@ -107,12 +108,14 @@ public sealed partial class MainWindow
                 gallery.SelectionChanged += detail.ShowShot;
                 gallery.PreviewRequested += galleryPreview;
                 detail.PreviewRequested += detailPreview;
+                detail.EditRequested += detailEdit;
                 detail.ShotDeleted += shotDeleted;
                 candidate.Own(gallery);
                 candidate.Own(detail);
                 candidate.OnDispose(() => gallery.SelectionChanged -= detail.ShowShot);
                 candidate.OnDispose(() => gallery.PreviewRequested -= galleryPreview);
                 candidate.OnDispose(() => detail.PreviewRequested -= detailPreview);
+                candidate.OnDispose(() => detail.EditRequested -= detailEdit);
                 candidate.OnDispose(() => detail.ShotDeleted -= shotDeleted);
                 var split = new Grid { ColumnSpacing = 16 };
                 split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

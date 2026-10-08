@@ -115,4 +115,77 @@ public sealed class AnnotationStateTests
         Assert.Equal(0.60, changed.Color.A, 8);
     }
 
+    [Fact]
+    public void SetText_CoalescesContinuousTypingIntoOneUndoOperation()
+    {
+        var source = new Layers<ImageSpace>();
+        var textLayer = new Layer(
+            LayerKind.Text,
+            new LRect(10, 20, 0, 0),
+            LColor.Red,
+            2,
+            text: "原文",
+            fontSize: 18);
+        source.Append(textLayer);
+        var state = new AnnotationState();
+        state.LoadImageLayers(source);
+
+        Assert.True(state.SetText(textLayer.Id, "新"));
+        Assert.True(state.SetText(textLayer.Id, "新文字"));
+        Assert.Equal("新文字", Assert.Single(state.Layers.Elements).Text);
+
+        Assert.True(state.Undo());
+        Assert.Equal("原文", Assert.Single(state.Layers.Elements).Text);
+        Assert.True(state.Redo());
+        Assert.Equal("新文字", Assert.Single(state.Layers.Elements).Text);
+    }
+
+    [Fact]
+    public void SetText_RejectsMissingAndNonTextLayersWithoutChangingHistory()
+    {
+        var state = new AnnotationState { Tool = AnnotationTool.Rect };
+        state.BeginDraw(new PointF(10, 20));
+        state.UpdateDraw(new PointF(70, 80));
+        state.EndDraw();
+        var rectangle = Assert.Single(state.Layers.Elements);
+        state.History.Reset();
+
+        Assert.False(state.SetText(Guid.NewGuid(), "missing"));
+        Assert.False(state.SetText(rectangle.Id, "not text"));
+        Assert.False(state.CanUndo);
+        Assert.Equal(string.Empty, rectangle.Text);
+    }
+
+    [Fact]
+    public void EmptyTextDraftIsDiscardedWithoutUndoingPreviousLayer()
+    {
+        var state = new AnnotationState { Tool = AnnotationTool.Rect };
+        state.BeginDraw(new PointF(10, 10));
+        state.UpdateDraw(new PointF(30, 30));
+        state.EndDraw();
+        var rectangle = Assert.Single(state.Layers.Elements);
+        state.Tool = AnnotationTool.Text;
+        state.BeginDraw(new PointF(40, 40));
+
+        Assert.True(state.Undo());
+
+        Assert.Equal(rectangle.Id, Assert.Single(state.Layers.Elements).Id);
+        Assert.True(state.CanUndo);
+    }
+
+    [Fact]
+    public void CompletedTextDraftIsOneUndoableAddTransaction()
+    {
+        var state = new AnnotationState { Tool = AnnotationTool.Text };
+        state.BeginDraw(new PointF(20, 20));
+        var draft = Assert.Single(state.Layers.Elements);
+        state.SetText(draft.Id, "一段文字");
+
+        state.EndTextEditing();
+        Assert.True(state.Undo());
+        Assert.Empty(state.Layers.Elements);
+        Assert.True(state.Redo());
+        Assert.Equal("一段文字", Assert.Single(state.Layers.Elements).Text);
+    }
+
 }

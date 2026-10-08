@@ -18,7 +18,10 @@ using Index.Platform.Windowing;
 using Index.Platform.Diagnostics;
 using Index.Search;
 using Index.Gallery;
+using Index.Editor;
 using System.Diagnostics;
+using Index.Platform.Ocr;
+using Index.Ocr;
 
 namespace Index;
 
@@ -41,6 +44,8 @@ public static class Program
     private static LocalRecognitionHost? _recognitionHost;
     private static SystemTrayIcon? _trayIcon;
     private static VirtualDisplayCaptureWorkflow? _virtualDisplayCapture;
+    private static PaddleOcrTextRecognizer? _paddleOcr;
+    private static Task? _ocrWarmupTask;
     private static Task? _virtualWindowCaptureTask;
     private static readonly object VirtualWindowCaptureGate = new();
     private static readonly CancellationTokenSource ApplicationLifetime = new();
@@ -51,6 +56,9 @@ public static class Program
     {
         Application.Start((app) =>
         {
+            if (Application.Current is { } currentApplication)
+                currentApplication.UnhandledException += OnXamlUnhandledException;
+
             try
             {
                 _shotStore = ShotStore.OpenDefaultAsync().GetAwaiter().GetResult();
@@ -58,6 +66,10 @@ public static class Program
                 _libraryOrganization = LibraryOrganizationStore.OpenDefaultAsync().GetAwaiter().GetResult();
                 _shortcutSettings = new ShortcutSettingsStore();
                 var clipboardWriter = new WindowsClipboardWriter();
+                _paddleOcr = new PaddleOcrTextRecognizer();
+                var ocrTextRecognizer = new FallbackOcrTextRecognizer(
+                    _paddleOcr,
+                    new WindowsOcrTextRecognizer());
                 var imageExporter = new WindowsImageExporter();
                 var clipboardReplaySuppression = new ClipboardReplaySuppression();
                 var clipboardHistoryWriter = new ClipboardHistoryReplayWriter(
@@ -76,7 +88,11 @@ public static class Program
                     clipboardReplaySuppression,
                     Diagnostics);
                 var actionRegistry = new CaptureActionRegistry();
-                _pinWindows = new PinWindowManager(actionRegistry);
+                _pinWindows = new PinWindowManager(
+                    actionRegistry,
+                    ocrTextRecognizer,
+                    clipboardWriter,
+                    Diagnostics);
                 actionRegistry.Register(new CompleteCaptureAction());
                 actionRegistry.Register(new CopyAction(clipboardWriter));
                 actionRegistry.Register(new SaveAction(imageExporter));
@@ -128,17 +144,24 @@ public static class Program
                     capturePersistence,
                     actionContextFactory,
                     _shortcutSettings,
+                    ocrTextRecognizer,
+                    clipboardWriter,
                     Diagnostics);
                 _coordinator.InitOnUiThread();
                 var shotAssetReader = new WindowsShotAssetReader(_shotStore);
+                var shotAssetOpener = new WindowsShotAssetOpener(_shotStore, shotAssetReader);
                 var galleryCommandService = new GalleryShotCommandService(
                     _shotStore,
                     _libraryOrganization,
                     shotAssetReader,
-                    new WindowsShotAssetOpener(_shotStore, shotAssetReader),
+                    shotAssetOpener,
+                    shotAssetOpener,
                     new WindowsExternalUriOpener(),
                     clipboardHistoryWriter,
                     imageExporter);
+                var editorSessions = new ShotEditorSessionFactory(
+                    shotAssetReader,
+                    _shotStore);
                 var unifiedSearch = new UnifiedSearchService(
                     _shotStore,
                     _clipboardStore);
@@ -165,8 +188,10 @@ public static class Program
                     applicationsWorkspaceControllers,
                     shotAssetReader,
                     galleryCommandService,
+                    editorSessions,
                     _recognitionPlugins);
                 _mainWindow.Activate();
+                StartOcrWarmup(_paddleOcr);
                 InitializeTrayIcon(_mainWindow);
                 _shortcutController = new GlobalShortcutController(
                     _shortcutSettings,
@@ -194,6 +219,9 @@ public static class Program
                     _clipboardHistory?.Dispose();
                     _clipboardPopup?.Close();
                     _pinWindows?.Dispose();
+                    _paddleOcr?.Dispose();
+                    _paddleOcr = null;
+                    _ocrWarmupTask = null;
                     _recognitionPlugins?.Dispose();
                     _recognitionHost?.Dispose();
                     _trayIcon?.Dispose();
@@ -208,11 +236,63 @@ public static class Program
         });
     }
 
+    private static void OnXamlUnhandledException(
+        object sender,
+        Microsoft.UI.Xaml.UnhandledExceptionEventArgs args)
+    {
+        Diagnostics.Write(
+            AppDiagnosticLevel.Error,
+            "runtime.xaml",
+            "unhandled-exception",
+            exception: args.Exception);
+    }
+
     private static void LogStartupFailure(Exception error) => Diagnostics.Write(
         AppDiagnosticLevel.Error,
         "startup",
         "startup-failed",
         exception: error);
+
+    private static void StartOcrWarmup(PaddleOcrTextRecognizer recognizer)
+    {
+        _ocrWarmupTask = ObserveOcrWarmupAsync(recognizer, ApplicationLifetime.Token);
+    }
+
+    private static async Task ObserveOcrWarmupAsync(
+        PaddleOcrTextRecognizer recognizer,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Let the main window paint and become interactive before loading the ONNX sessions.
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            var started = Stopwatch.GetTimestamp();
+            await recognizer.WarmUpAsync(cancellationToken).ConfigureAwait(false);
+            Diagnostics.Write(
+                AppDiagnosticLevel.Information,
+                "ocr",
+                "warmup-completed",
+                new Dictionary<string, string?>
+                {
+                    ["elapsedMilliseconds"] = Stopwatch
+                        .GetElapsedTime(started)
+                        .TotalMilliseconds
+                        .ToString("F0", System.Globalization.CultureInfo.InvariantCulture)
+                });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            // OCR remains usable through lazy retry and the Windows OCR fallback.
+            Diagnostics.Write(
+                AppDiagnosticLevel.Warning,
+                "ocr",
+                "warmup-failed",
+                exception: error);
+        }
+    }
 
     private static void StartVirtualWindowCapture(VirtualWindowCaptureWorkflow workflow)
     {

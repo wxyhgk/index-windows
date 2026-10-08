@@ -5,6 +5,8 @@ using Index.UI.Editor;
 using Index.Toolbar;
 using Index.Settings;
 using Index.Platform.Diagnostics;
+using Index.Platform.Clipboard;
+using Index.Ocr;
 using Microsoft.UI.Dispatching;
 using System.Diagnostics;
 
@@ -26,6 +28,8 @@ public sealed class CaptureCoordinator
     private readonly ICapturePersistenceService _persistenceService;
     private readonly CaptureActionContextFactory _actionContextFactory;
     private readonly IShortcutSettingsStore _settingsStore;
+    private readonly IOcrTextRecognizer _ocrTextRecognizer;
+    private readonly IClipboardWriter _clipboardWriter;
     private readonly IAppDiagnostics _diagnostics;
     private readonly CaptureSessionGate _captureSessionGate = new();
     private readonly CaptureTransitionTaskTracker _highResolutionTransitions = new();
@@ -44,6 +48,8 @@ public sealed class CaptureCoordinator
         ICapturePersistenceService persistenceService,
         CaptureActionContextFactory actionContextFactory,
         IShortcutSettingsStore settingsStore,
+        IOcrTextRecognizer ocrTextRecognizer,
+        IClipboardWriter clipboardWriter,
         IAppDiagnostics diagnostics)
     {
         _captureSource = captureSource ?? throw new ArgumentNullException(nameof(captureSource));
@@ -63,6 +69,10 @@ public sealed class CaptureCoordinator
         _actionContextFactory = actionContextFactory
             ?? throw new ArgumentNullException(nameof(actionContextFactory));
         _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
+        _ocrTextRecognizer = ocrTextRecognizer
+            ?? throw new ArgumentNullException(nameof(ocrTextRecognizer));
+        _clipboardWriter = clipboardWriter
+            ?? throw new ArgumentNullException(nameof(clipboardWriter));
         _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
     }
 
@@ -235,6 +245,8 @@ public sealed class CaptureCoordinator
             var session = new SelectionOverlaySession(
                 snapshots,
                 sourceSnapshot.Windows,
+                _ocrTextRecognizer,
+                _clipboardWriter,
                 _diagnostics);
             var overlayDispatcher = DispatcherQueue.GetForCurrentThread()
                 ?? _uiDispatcher

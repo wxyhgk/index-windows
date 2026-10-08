@@ -76,11 +76,14 @@ public sealed class MoreAnnotationToolsToolbarControl : ToolbarControlBase
     public override string Label => "更多工具";
 
     public MoreAnnotationToolsToolbarControl(
-        IEnumerable<IAnnotationToolDescriptor> descriptors)
+        IEnumerable<IAnnotationToolDescriptor> descriptors,
+        bool allowText = false,
+        bool allowCompositing = false)
     {
         ArgumentNullException.ThrowIfNull(descriptors);
         Descriptors = descriptors
-            .Where(descriptor => !descriptor.IsPinnedToBar && IsAvailable(descriptor.Tool))
+            .Where(descriptor => !descriptor.IsPinnedToBar
+                && IsAvailable(descriptor.Tool, allowText, allowCompositing))
             .ToArray();
     }
 
@@ -99,8 +102,12 @@ public sealed class MoreAnnotationToolsToolbarControl : ToolbarControlBase
         context.Annotation.Tool = tool;
     }
 
-    internal static bool IsAvailable(AnnotationTool tool)
-        => tool is not AnnotationTool.Text and not AnnotationTool.Pixelate and not AnnotationTool.Crop;
+    internal static bool IsAvailable(
+        AnnotationTool tool,
+        bool allowText = false,
+        bool allowCompositing = false)
+        => (allowCompositing || tool is not AnnotationTool.Pixelate and not AnnotationTool.Crop)
+           && (allowText || tool is not AnnotationTool.Text);
 }
 
 /// <summary>
@@ -114,6 +121,8 @@ public sealed class AnnotationToolToolbarControl : ToolbarControlBase
 
     private readonly IAnnotationToolDescriptor? _descriptor;
     private readonly int _order;
+    private readonly bool _allowText;
+    private readonly bool _allowCompositing;
 
     /// <summary><see langword="null"/> represents pointer/select mode.</summary>
     public AnnotationTool? Tool => _descriptor?.Tool;
@@ -127,16 +136,26 @@ public sealed class AnnotationToolToolbarControl : ToolbarControlBase
     public override string Glyph => ToolGlyph(Tool);
     public override string Label => Tool?.Title() ?? "指针";
 
-    public AnnotationToolToolbarControl(IAnnotationToolDescriptor? descriptor, int order)
+    public AnnotationToolToolbarControl(
+        IAnnotationToolDescriptor? descriptor,
+        int order,
+        bool allowText = false,
+        bool allowCompositing = false)
     {
         _descriptor = descriptor;
         _order = order;
+        _allowText = allowText;
+        _allowCompositing = allowCompositing;
     }
 
     public override bool IsVisible(ToolbarContext context)
     {
-        // 文字输入与局部马赛克尚未接入 Windows 画布/合成器，避免暴露假按钮。
-        if (Tool.HasValue && !MoreAnnotationToolsToolbarControl.IsAvailable(Tool.Value))
+        // Hosts opt into text/compositing only after supplying their required editor
+        // surfaces. Capture and pin keep unsupported tools hidden.
+        if (Tool.HasValue && !MoreAnnotationToolsToolbarControl.IsAvailable(
+                Tool.Value,
+                _allowText,
+                _allowCompositing))
             return false;
         return _descriptor is null || _descriptor.IsPinnedToBar || context.Annotation.Tool == Tool;
     }
@@ -213,10 +232,30 @@ public sealed class AnnotationHistoryToolbarControl : ToolbarControlBase
 public static class AnnotationToolbarControls
 {
     public static void RegisterCaptureAnnotationDefaults(ToolbarRegistry registry)
+        => RegisterAnnotationDefaults(
+            registry,
+            allowText: false,
+            allowCompositing: false);
+
+    /// <summary>The editor exposes text because its inspector owns text input.</summary>
+    public static void RegisterEditorAnnotationDefaults(ToolbarRegistry registry)
+        => RegisterAnnotationDefaults(
+            registry,
+            allowText: true,
+            allowCompositing: true);
+
+    private static void RegisterAnnotationDefaults(
+        ToolbarRegistry registry,
+        bool allowText,
+        bool allowCompositing)
     {
         ArgumentNullException.ThrowIfNull(registry);
 
-        registry.Register(new AnnotationToolToolbarControl(descriptor: null, order: 0));
+        registry.Register(new AnnotationToolToolbarControl(
+            descriptor: null,
+            order: 0,
+            allowText: allowText,
+            allowCompositing: allowCompositing));
         registry.Register(new ShapeAnnotationToolbarControl());
 
         for (int index = 0; index < ToolRegistry.Descriptors.Count; index++)
@@ -225,10 +264,15 @@ public static class AnnotationToolbarControls
                 continue;
             registry.Register(new AnnotationToolToolbarControl(
                 ToolRegistry.Descriptors[index],
-                order: index + 1));
+                order: index + 1,
+                allowText: allowText,
+                allowCompositing: allowCompositing));
         }
 
-        registry.Register(new MoreAnnotationToolsToolbarControl(ToolRegistry.Descriptors));
+        registry.Register(new MoreAnnotationToolsToolbarControl(
+            ToolRegistry.Descriptors,
+            allowText,
+            allowCompositing));
 
         registry.Register(new AnnotationHistoryToolbarControl(isUndo: true));
         registry.Register(new AnnotationHistoryToolbarControl(isUndo: false));

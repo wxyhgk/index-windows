@@ -66,6 +66,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
     }
 
     public event Action<ShotGalleryGridView, ShotRecord>? PreviewRequested;
+    public event Action<ShotRecord, IShotPageSource>? EditRequested;
 
     public void Refresh()
     {
@@ -456,6 +457,7 @@ internal sealed class ApplicationsWorkspaceView : UserControl, IDisposable
             gallery.SelectionChanged += detail.ShowShot;
             gallery.PreviewRequested += shot => PreviewRequested?.Invoke(gallery, shot);
             detail.PreviewRequested += shot => PreviewRequested?.Invoke(gallery, shot);
+            detail.EditRequested += shot => EditRequested?.Invoke(shot, pageSource);
             detail.ShotDeleted += deletedShot => Run(_controller.RefreshAsync());
             var split = new Grid { ColumnSpacing = 16 };
             split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

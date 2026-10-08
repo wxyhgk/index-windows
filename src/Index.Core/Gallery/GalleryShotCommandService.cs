@@ -15,6 +15,7 @@ public sealed class GalleryShotCommandService
     private readonly IShotOrganizationRepository _organization;
     private readonly IShotAssetReader _assets;
     private readonly IShotAssetOpener _assetOpener;
+    private readonly IShotAssetPathResolver _assetPaths;
     private readonly IExternalUriOpener _uriOpener;
     private readonly IClipboardWriter _clipboardWriter;
     private readonly IImageExporter _exporter;
@@ -24,6 +25,7 @@ public sealed class GalleryShotCommandService
         IShotOrganizationRepository organization,
         IShotAssetReader assets,
         IShotAssetOpener assetOpener,
+        IShotAssetPathResolver assetPaths,
         IExternalUriOpener uriOpener,
         IClipboardWriter clipboardWriter,
         IImageExporter exporter)
@@ -32,6 +34,7 @@ public sealed class GalleryShotCommandService
         _organization = organization ?? throw new ArgumentNullException(nameof(organization));
         _assets = assets ?? throw new ArgumentNullException(nameof(assets));
         _assetOpener = assetOpener ?? throw new ArgumentNullException(nameof(assetOpener));
+        _assetPaths = assetPaths ?? throw new ArgumentNullException(nameof(assetPaths));
         _uriOpener = uriOpener ?? throw new ArgumentNullException(nameof(uriOpener));
         _clipboardWriter = clipboardWriter
             ?? throw new ArgumentNullException(nameof(clipboardWriter));
@@ -64,6 +67,18 @@ public sealed class GalleryShotCommandService
     {
         ArgumentNullException.ThrowIfNull(shot);
         return _assetOpener.OpenOriginalAsync(shot, cancellationToken);
+    }
+
+    public async Task<string> CopyOriginalPathAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(shot);
+        string path = await _assetPaths.ResolveOriginalPathAsync(shot, cancellationToken)
+            .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        _clipboardWriter.WriteText(path);
+        return path;
     }
 
     public bool OpenSource(ShotRecord shot)
@@ -117,7 +132,7 @@ public sealed class GalleryShotCommandService
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(shot);
-        var asset = await _assets.ReadBestAvailableAsync(shot, cancellationToken)
+        var asset = await _assets.ReadRenderedAsync(shot, cancellationToken)
             .ConfigureAwait(false);
         if (asset.HasData
             && string.Equals(asset.MediaType, "image/png", StringComparison.OrdinalIgnoreCase))

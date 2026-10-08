@@ -121,12 +121,42 @@ public sealed class CommandToolbarControl : ToolbarControlBase
     public override void Activate(ToolbarContext context) => context.Perform(Id);
 }
 
+public sealed class LiveTextToolbarControl : ToolbarControlBase
+{
+    private static readonly IReadOnlySet<ToolbarScope> CaptureScope =
+        new HashSet<ToolbarScope> { ToolbarScope.Capture };
+
+    public override string Id => ToolbarCommandIds.LiveText;
+    public override IReadOnlySet<ToolbarScope> Scopes => CaptureScope;
+    public override ToolbarGroup Group => ToolbarGroup.Tools;
+    public override int Order => -100;
+    public override string Glyph => "文";
+    public override string Label => "选择图片文字 · Shift+C 全部复制";
+
+    public override bool IsVisible(ToolbarContext context)
+        => context.Capabilities.Supports(ToolbarHostMode.LiveText);
+
+    public override bool IsEnabled(ToolbarContext context)
+        => IsVisible(context) && !context.IsActionExecuting(Id);
+
+    public override bool IsSelected(ToolbarContext context)
+        => context.Capabilities.IsActive(ToolbarHostMode.LiveText);
+
+    public override bool IsBusy(ToolbarContext context)
+        => context.IsActionExecuting(Id);
+
+    public override void Activate(ToolbarContext context)
+        => context.Capabilities.ToggleExclusive(ToolbarHostMode.LiveText);
+}
+
 public static class ToolbarCommandIds
 {
+    public const string LiveText = "capture.live-text";
     public const string Pin = "pin";
     public const string Complete = "complete";
     public const string Save = "save";
     public const string Copy = "copy";
+    public const string CopyText = "pin.copy-text";
     public const string Close = "close";
     public const string Cancel = "action.cancel";
     public const string HighResolution4K = "capture.4k";

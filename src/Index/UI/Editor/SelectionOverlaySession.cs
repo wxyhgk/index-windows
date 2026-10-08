@@ -3,6 +3,8 @@ using Index.Platform;
 using Microsoft.UI.Xaml;
 using System.Runtime.InteropServices;
 using Index.Platform.Diagnostics;
+using Index.Platform.Clipboard;
+using Index.Ocr;
 
 namespace Index.UI.Editor;
 
@@ -30,6 +32,8 @@ public sealed class SelectionOverlaySession : IDisposable
     public SelectionOverlaySession(
         IReadOnlyList<DisplaySnapshot> snapshots,
         IReadOnlyList<SourceWindowInfo> windows,
+        IOcrTextRecognizer ocrTextRecognizer,
+        IClipboardWriter clipboardWriter,
         IAppDiagnostics diagnostics)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
@@ -41,7 +45,10 @@ public sealed class SelectionOverlaySession : IDisposable
         _state = new SelectionOverlaySessionState(snapshots.Select(snapshot => snapshot.DisplayId));
         foreach (var snapshot in snapshots)
         {
-            var window = new OverlayWindow(diagnostics);
+            var window = new OverlayWindow(
+                ocrTextRecognizer,
+                clipboardWriter,
+                diagnostics);
             window.CloseOnCapture = false;
             var targets = WindowSelectionTargetMapper.Create(
                 snapshot,

@@ -4,6 +4,7 @@ public enum MainNavigationPage
 {
     Library,
     PreviewWorkspace,
+    EditorWorkspace,
     Collections,
     Apps,
     Settings,
@@ -26,18 +27,24 @@ public sealed class MainNavigationState
 
     public MainNavigationPage PreviewReturnPage { get; private set; } = MainNavigationPage.Library;
 
+    public MainNavigationPage EditorReturnPage { get; private set; } = MainNavigationPage.Library;
+
     public int Generation { get; private set; }
 
     public bool IsLibraryShots =>
         (Page == MainNavigationPage.Library
          || Page == MainNavigationPage.PreviewWorkspace
-            && PreviewReturnPage == MainNavigationPage.Library)
+            && PreviewReturnPage == MainNavigationPage.Library
+         || Page == MainNavigationPage.EditorWorkspace
+            && EditorReturnPage == MainNavigationPage.Library)
         && Section == LibrarySection.Shots;
 
     public bool IsAppsWorkspace =>
         Page == MainNavigationPage.Apps
         || Page == MainNavigationPage.PreviewWorkspace
-           && PreviewReturnPage == MainNavigationPage.Apps;
+           && PreviewReturnPage == MainNavigationPage.Apps
+        || Page == MainNavigationPage.EditorWorkspace
+           && EditorReturnPage == MainNavigationPage.Apps;
 
     public int ShowLibrary(LibrarySection section)
     {
@@ -63,9 +70,28 @@ public sealed class MainNavigationState
         return Page;
     }
 
+    public int ShowEditor()
+    {
+        if (Page != MainNavigationPage.EditorWorkspace)
+            EditorReturnPage = Page;
+        Page = MainNavigationPage.EditorWorkspace;
+        return ++Generation;
+    }
+
+    public MainNavigationPage ReturnFromEditor()
+    {
+        if (Page != MainNavigationPage.EditorWorkspace)
+            throw new InvalidOperationException("当前不在图片编辑工作区。");
+        Page = EditorReturnPage;
+        Generation++;
+        return Page;
+    }
+
     public int ShowPage(MainNavigationPage page)
     {
-        if (page is MainNavigationPage.Library or MainNavigationPage.PreviewWorkspace)
+        if (page is MainNavigationPage.Library
+            or MainNavigationPage.PreviewWorkspace
+            or MainNavigationPage.EditorWorkspace)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(page),

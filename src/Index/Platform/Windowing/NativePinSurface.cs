@@ -17,11 +17,28 @@ internal sealed class NativePinSurface : IDisposable
     private const uint WsExToolWindow = 0x00000080;
     private const int SwShowNoActivate = 4;
     private const uint WmClose = 0x0010;
+    private const uint WmSetCursor = 0x0020;
     private const uint WmNcDestroy = 0x0082;
     private const uint WmNcHitTest = 0x0084;
+    private const uint WmKeyDown = 0x0100;
+    private const uint WmNcMouseMove = 0x00A0;
+    private const uint WmMouseMove = 0x0200;
+    private const uint WmLeftButtonDown = 0x0201;
+    private const uint WmLeftButtonUp = 0x0202;
     private const uint WmMouseWheel = 0x020A;
+    private const uint WmCaptureChanged = 0x0215;
+    private const uint WmNcMouseLeave = 0x02A2;
+    private const uint WmMouseLeave = 0x02A3;
     private const uint WmWindowPosChanged = 0x0047;
+    private const int HtClient = 1;
     private const int HtCaption = 2;
+    private const int IdcIBeam = 32513;
+    private const int VirtualKeyControl = 0x11;
+    private const int VirtualKeyA = 0x41;
+    private const int VirtualKeyC = 0x43;
+    private const int VirtualKeyEscape = 0x1B;
+    private const uint TrackMouseLeave = 0x00000002;
+    private const uint TrackMouseNonClient = 0x00000010;
     private const uint UlwAlpha = 0x00000002;
     private const byte AcSrcAlpha = 0x01;
     private const uint DibRgbColors = 0;
@@ -33,6 +50,8 @@ internal sealed class NativePinSurface : IDisposable
     private static ushort _windowClassAtom;
 
     private nint _hwnd;
+    private bool _isSelectingText;
+    private bool _isPointerInside;
     private bool _disposed;
 
     public NativePinSurface()
@@ -64,6 +83,14 @@ internal sealed class NativePinSurface : IDisposable
     public event Action<PinRect>? FrameChanged;
     public event Action<int, bool>? WheelChanged;
     public event Action? CloseRequested;
+    public event Action<double, double>? TextPointerPressed;
+    public event Action<double, double>? TextPointerMoved;
+    public event Action<double, double>? TextPointerReleased;
+    public event Action? TextPointerCanceled;
+    public event Action<PinTextCommand>? TextCommandRequested;
+    public event Action<bool>? HoverChanged;
+
+    public Func<double, double, bool>? TextHitTest { get; set; }
 
     public PinRect CurrentFrame
     {
@@ -252,23 +279,68 @@ internal sealed class NativePinSurface : IDisposable
             switch (message)
             {
                 case WmNcHitTest:
-                    return new nint(HtCaption);
+                    return surface.IsTextHitAtScreenPoint(lParam)
+                        ? new nint(HtClient)
+                        : new nint(HtCaption);
+                case WmSetCursor:
+                    if (unchecked((short)(lParam.ToInt64() & 0xFFFF)) == HtClient)
+                    {
+                        NativeMethods.SetCursor(NativeMethods.LoadCursor(nint.Zero, new nint(IdcIBeam)));
+                        return new nint(1);
+                    }
+                    break;
+                case WmLeftButtonDown:
+                    surface._isSelectingText = true;
+                    NativeMethods.SetForegroundWindow(hwnd);
+                    NativeMethods.SetFocus(hwnd);
+                    NativeMethods.SetCapture(hwnd);
+                    surface.InvokeTextPointer(surface.TextPointerPressed, lParam);
+                    return nint.Zero;
+                case WmLeftButtonUp when surface._isSelectingText:
+                    surface._isSelectingText = false;
+                    surface.InvokeTextPointer(surface.TextPointerReleased, lParam);
+                    if (NativeMethods.GetCapture() == hwnd)
+                        NativeMethods.ReleaseCapture();
+                    return nint.Zero;
+                case WmCaptureChanged when surface._isSelectingText:
+                    surface._isSelectingText = false;
+                    surface.TryInvoke(surface.TextPointerCanceled);
+                    return nint.Zero;
+                case WmKeyDown:
+                    if (surface.TryHandleTextKey(wParam))
+                        return nint.Zero;
+                    break;
+                case WmNcMouseMove:
+                    surface.TrackPointer(nonClient: true);
+                    break;
+                case WmMouseMove:
+                    surface.TrackPointer(nonClient: false);
+                    if (surface._isSelectingText)
+                    {
+                        surface.InvokeTextPointer(surface.TextPointerMoved, lParam);
+                        return nint.Zero;
+                    }
+                    break;
+                case WmNcMouseLeave:
+                case WmMouseLeave:
+                    surface.HandlePointerLeave();
+                    break;
                 case WmMouseWheel:
                     int delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xFFFF));
                     bool control = (wParam.ToInt64() & 0x0008) != 0;
-                    surface.WheelChanged?.Invoke(delta, control);
+                    surface.TryInvoke(() => surface.WheelChanged?.Invoke(delta, control));
                     return nint.Zero;
                 case WmWindowPosChanged:
                     try
                     {
-                        surface.FrameChanged?.Invoke(surface.CurrentFrame);
+                        surface.TryInvoke(() => surface.FrameChanged?.Invoke(surface.CurrentFrame));
                     }
                     catch (ObjectDisposedException)
                     {
                     }
                     break;
                 case WmClose:
-                    surface.CloseRequested?.Invoke();
+                    surface.TryInvoke(surface.CloseRequested);
                     return nint.Zero;
                 case WmNcDestroy:
                     lock (Surfaces)
@@ -277,6 +349,99 @@ internal sealed class NativePinSurface : IDisposable
             }
         }
         return NativeMethods.DefWindowProc(hwnd, message, wParam, lParam);
+    }
+
+    private bool IsTextHitAtScreenPoint(nint packedScreenPoint)
+    {
+        var hitTest = TextHitTest;
+        if (hitTest is null || !NativeMethods.GetWindowRect(_hwnd, out var frame))
+            return false;
+
+        double x = unchecked((short)(packedScreenPoint.ToInt64() & 0xFFFF)) - frame.Left;
+        double y = unchecked((short)((packedScreenPoint.ToInt64() >> 16) & 0xFFFF)) - frame.Top;
+        try
+        {
+            return hitTest(x, y);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void TrackPointer(bool nonClient)
+    {
+        if (!_isPointerInside)
+        {
+            _isPointerInside = true;
+            TryInvoke(() => HoverChanged?.Invoke(true));
+        }
+
+        var tracking = new TrackMouseEvent
+        {
+            Size = (uint)Marshal.SizeOf<TrackMouseEvent>(),
+            Flags = TrackMouseLeave | (nonClient ? TrackMouseNonClient : 0),
+            TrackWindow = _hwnd
+        };
+        NativeMethods.TrackMouseEvent(ref tracking);
+    }
+
+    private void HandlePointerLeave()
+    {
+        if (!_isPointerInside)
+            return;
+
+        if (NativeMethods.GetCursorPos(out var cursor)
+            && NativeMethods.GetWindowRect(_hwnd, out var frame)
+            && cursor.X >= frame.Left && cursor.X < frame.Right
+            && cursor.Y >= frame.Top && cursor.Y < frame.Bottom)
+        {
+            return;
+        }
+
+        _isPointerInside = false;
+        TryInvoke(() => HoverChanged?.Invoke(false));
+    }
+
+    private void InvokeTextPointer(Action<double, double>? callback, nint packedClientPoint)
+    {
+        if (callback is null)
+            return;
+
+        double x = unchecked((short)(packedClientPoint.ToInt64() & 0xFFFF));
+        double y = unchecked((short)((packedClientPoint.ToInt64() >> 16) & 0xFFFF));
+        TryInvoke(() => callback(x, y));
+    }
+
+    private bool TryHandleTextKey(nint keyParameter)
+    {
+        int key = unchecked((int)keyParameter.ToInt64());
+        bool control = NativeMethods.GetKeyState(VirtualKeyControl) < 0;
+        PinTextCommand? command = key switch
+        {
+            VirtualKeyC when control => PinTextCommand.Copy,
+            VirtualKeyA when control => PinTextCommand.SelectAll,
+            VirtualKeyEscape => PinTextCommand.Escape,
+            _ => null
+        };
+        if (command is null)
+            return false;
+
+        TryInvoke(() => TextCommandRequested?.Invoke(command.Value));
+        return true;
+    }
+
+    private void TryInvoke(Action? callback)
+    {
+        try
+        {
+            callback?.Invoke();
+        }
+        catch (Exception error)
+        {
+            // Managed exceptions must never cross the native window-procedure boundary.
+            System.Diagnostics.Debug.WriteLine($"Native pin callback failed: {error}");
+        }
     }
 
     private void ThrowIfDisposed()
@@ -351,6 +516,15 @@ internal sealed class NativePinSurface : IDisposable
         public int Bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TrackMouseEvent
+    {
+        public uint Size;
+        public uint Flags;
+        public nint TrackWindow;
+        public uint HoverTime;
+    }
+
     private static class NativeMethods
     {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
@@ -395,6 +569,37 @@ internal sealed class NativePinSurface : IDisposable
 
         [DllImport("user32.dll")]
         internal static extern nint LoadCursor(nint instance, nint cursorName);
+
+        [DllImport("user32.dll")]
+        internal static extern nint SetCursor(nint cursor);
+
+        [DllImport("user32.dll")]
+        internal static extern nint SetFocus(nint hwnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool SetForegroundWindow(nint hwnd);
+
+        [DllImport("user32.dll")]
+        internal static extern nint SetCapture(nint hwnd);
+
+        [DllImport("user32.dll")]
+        internal static extern nint GetCapture();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        internal static extern short GetKeyState(int virtualKey);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool TrackMouseEvent(ref TrackMouseEvent trackEvent);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetCursorPos(out NativePoint point);
 
         [DllImport("user32.dll")]
         internal static extern nint GetDC(nint hwnd);

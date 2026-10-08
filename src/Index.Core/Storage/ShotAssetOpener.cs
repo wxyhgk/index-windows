@@ -10,3 +10,13 @@ public interface IShotAssetOpener
         ShotRecord shot,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Resolves a validated original asset path without exposing the library layout to UI code.
+/// </summary>
+public interface IShotAssetPathResolver
+{
+    Task<string> ResolveOriginalPathAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default);
+}

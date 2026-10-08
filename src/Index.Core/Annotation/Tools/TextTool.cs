@@ -30,12 +30,17 @@ public sealed class TextTool : AnnotationToolDescriptorBase
         using var paint = new SKPaint
         {
             Color = layer.Color.ToSKColor(),
-            TextSize = (float)fontSize,
             IsAntialias = true
         };
         using var typeface = SKTypeface.FromFamilyName("Segoe UI", new SKFontStyle(SKFontStyleWeight.SemiBold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright));
-        paint.Typeface = typeface;
+        using var font = new SKFont(typeface, (float)fontSize);
 
-        canvas.DrawText(layer.Text, (float)layer.Rect.X, (float)(layer.Rect.Y + fontSize), paint);
+        canvas.DrawText(
+            layer.Text,
+            (float)layer.Rect.X,
+            (float)(layer.Rect.Y + fontSize),
+            SKTextAlign.Left,
+            font,
+            paint);
     }
 }

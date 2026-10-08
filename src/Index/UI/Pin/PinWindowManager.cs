@@ -1,5 +1,8 @@
 using Index.Actions;
+using Index.Ocr;
 using Index.Pin;
+using Index.Platform.Clipboard;
+using Index.Platform.Diagnostics;
 using Index.Render;
 using Microsoft.UI.Dispatching;
 
@@ -10,12 +13,25 @@ public sealed class PinWindowManager : IPinPresenter, IDisposable
 {
     private readonly DispatcherQueue _dispatcher;
     private readonly CaptureActionRegistry _actions;
+    private readonly IOcrTextRecognizer _ocrTextRecognizer;
+    private readonly IClipboardWriter _clipboardWriter;
+    private readonly IAppDiagnostics _diagnostics;
     private readonly HashSet<PinWindow> _windows = new();
     private bool _disposed;
 
-    public PinWindowManager(CaptureActionRegistry actions, DispatcherQueue? dispatcher = null)
+    public PinWindowManager(
+        CaptureActionRegistry actions,
+        IOcrTextRecognizer ocrTextRecognizer,
+        IClipboardWriter clipboardWriter,
+        IAppDiagnostics? diagnostics = null,
+        DispatcherQueue? dispatcher = null)
     {
         _actions = actions ?? throw new ArgumentNullException(nameof(actions));
+        _ocrTextRecognizer = ocrTextRecognizer
+            ?? throw new ArgumentNullException(nameof(ocrTextRecognizer));
+        _clipboardWriter = clipboardWriter
+            ?? throw new ArgumentNullException(nameof(clipboardWriter));
+        _diagnostics = diagnostics ?? NullAppDiagnostics.Instance;
         _dispatcher = dispatcher
             ?? DispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("PinWindowManager must be created on the UI thread.");
@@ -59,10 +75,21 @@ public sealed class PinWindowManager : IPinPresenter, IDisposable
     private Task Present(PinWindowModel model)
     {
         if (_disposed) return Task.CompletedTask;
-        var window = new PinWindow(model, _actions);
+        var window = new PinWindow(
+            model,
+            _actions,
+            _ocrTextRecognizer,
+            _clipboardWriter,
+            _diagnostics);
         _windows.Add(window);
         window.Closed += (_, _) => _windows.Remove(window);
-        return window.ShowAsync();
+        return ShowAndStartOcrAsync(window);
+    }
+
+    private static async Task ShowAndStartOcrAsync(PinWindow window)
+    {
+        await window.ShowAsync();
+        window.StartAutomaticOcr();
     }
 
     private Task InvokeOnUiThreadAsync(Action action, CancellationToken cancellationToken)

@@ -302,7 +302,7 @@ internal sealed class ShotPreviewView : UserControl, IDisposable
         var cancellationToken = session.CancellationToken;
         try
         {
-            var asset = await _shotAssets.ReadBestAvailableAsync(shot, cancellationToken);
+            var asset = await _shotAssets.ReadRenderedAsync(shot, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             await ReturnToUiAsync();
             if (!_previewSessions.IsCurrent(session))

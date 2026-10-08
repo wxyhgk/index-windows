@@ -4,6 +4,7 @@ using Index.Toolbar;
 using Index.UI.Toolbar;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 
 namespace Index.UI.Pin;
@@ -17,9 +18,14 @@ internal sealed class PinToolbarWindow : Window
     private readonly ToolbarRegistry _registry;
     private readonly ToolbarContext _context;
     private readonly ToolbarView _toolbar;
+    private readonly Grid _root;
     private double _physicalWidth;
     private double _physicalHeight;
+    private bool _initialized;
+    private bool _isVisible;
     private bool _closed;
+
+    public event Action<bool>? HoverChanged;
 
     public PinToolbarWindow(ToolbarRegistry registry, ToolbarContext context)
     {
@@ -32,33 +38,52 @@ internal sealed class PinToolbarWindow : Window
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top
         };
-        Content = new Grid
+        _root = new Grid
         {
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             Children = { _toolbar }
         };
-        Closed += (_, _) => _closed = true;
+        _root.PointerEntered += OnPointerEntered;
+        _root.PointerExited += OnPointerExited;
+        Content = _root;
+        Closed += OnClosed;
     }
 
-    public void Show(Window owner, PinRect imageFrame)
-        => Show(WinRT.Interop.WindowNative.GetWindowHandle(owner), imageFrame);
+    public void Initialize(Window owner, PinRect imageFrame)
+        => Initialize(WinRT.Interop.WindowNative.GetWindowHandle(owner), imageFrame);
 
-    public void Show(nint ownerHwnd, PinRect imageFrame)
+    public void Initialize(nint ownerHwnd, PinRect imageFrame)
     {
         if (_closed) return;
         ConfigurePresenter();
         OwnedWindowRelationship.Attach(ownerHwnd, this);
         RefreshAndPlace(imageFrame);
-        // Show only after the presenter, owner and physical bounds are final. Activating first
-        // exposes one frame of the default overlapped window and also steals focus from the pin.
-        AppWindow.Show(false);
+        if (!_initialized)
+        {
+            // Materialize WinUI's control templates outside the native pin WndProc. The first
+            // pointer-driven Show used to apply the Button templates reentrantly and surfaced as
+            // a stowed Microsoft.UI.Xaml 0x802B000A process crash.
+            PinWindowHost.MoveAndResize(
+                this,
+                new PinRect(-32000, -32000, _physicalWidth, _physicalHeight));
+            AppWindow.Show(false);
+            AppWindow.Hide();
+            Place(imageFrame, _physicalWidth, _physicalHeight);
+        }
+        _initialized = true;
+        _isVisible = false;
     }
 
     public void ShowAdjacent(PinRect imageFrame)
     {
-        if (_closed) return;
+        if (_closed || !_initialized) return;
         RefreshAndPlace(imageFrame);
-        AppWindow.Show(false);
+        if (!_isVisible)
+        {
+            // The toolbar never activates: the pin retains keyboard focus and text selection.
+            AppWindow.Show(false);
+            _isVisible = true;
+        }
     }
 
     public void MoveAdjacent(PinRect imageFrame)
@@ -70,8 +95,11 @@ internal sealed class PinToolbarWindow : Window
 
     public void Hide()
     {
-        if (!_closed)
+        if (!_closed && _isVisible)
+        {
             AppWindow.Hide();
+            _isVisible = false;
+        }
     }
 
     public void Refresh(PinRect imageFrame)
@@ -84,6 +112,21 @@ internal sealed class PinToolbarWindow : Window
     {
         if (!_closed)
             Close();
+    }
+
+    private void OnPointerEntered(object sender, PointerRoutedEventArgs args)
+        => HoverChanged?.Invoke(true);
+
+    private void OnPointerExited(object sender, PointerRoutedEventArgs args)
+        => HoverChanged?.Invoke(false);
+
+    private void OnClosed(object sender, WindowEventArgs args)
+    {
+        _closed = true;
+        _isVisible = false;
+        _root.PointerEntered -= OnPointerEntered;
+        _root.PointerExited -= OnPointerExited;
+        Closed -= OnClosed;
     }
 
     private void ConfigurePresenter()

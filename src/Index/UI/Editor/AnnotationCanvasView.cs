@@ -29,6 +29,8 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
 
     private readonly SKXamlCanvas _canvas;
     private SKBitmap? _backgroundBitmap;
+    private SKBitmap? _pixelatedBackgroundBitmap;
+    private string _pixelateSignature = string.Empty;
     private PointerOperation _pointerOperation;
     private bool _isSubscribed;
     private bool _lastCanUndo;
@@ -103,6 +105,9 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
         var old = _backgroundBitmap;
         _backgroundBitmap = replacement;
         old?.Dispose();
+        _pixelatedBackgroundBitmap?.Dispose();
+        _pixelatedBackgroundBitmap = null;
+        _pixelateSignature = string.Empty;
         InvalidateCanvas();
     }
 
@@ -159,14 +164,14 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
         var canvas = e.Surface.Canvas;
         canvas.Clear(SKColors.Transparent);
 
-        if (_backgroundBitmap is not null)
+        if (ResolvePreviewBackground() is { } previewBackground)
         {
             using var backgroundPaint = new SKPaint
             {
                 IsAntialias = true
             };
             canvas.DrawBitmap(
-                _backgroundBitmap,
+                previewBackground,
                 new SKRect(0, 0, e.Info.Width, e.Info.Height),
                 backgroundPaint);
         }
@@ -179,10 +184,76 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
             e.Info.Width,
             e.Info.Height);
 
+        DrawCompositionGuides(canvas);
+
         if (State.SelectedId is not { } selectedId) return;
         if (State.Layers.FirstIndex(selectedId) is not int selectedIndex) return;
 
         LayerRenderer.RenderSelectionHandles(State.Layers.Elements[selectedIndex], canvas);
+    }
+
+    private SKBitmap? ResolvePreviewBackground()
+    {
+        if (_backgroundBitmap is null)
+            return null;
+        var pixelates = State.Layers.Elements
+            .Where(layer => layer.Kind == LayerKind.Pixelate)
+            .ToArray();
+        string signature = string.Join(
+            '|',
+            pixelates.Select(layer =>
+                $"{layer.Id:N}:{layer.Rect.X:R}:{layer.Rect.Y:R}:{layer.Rect.W:R}:{layer.Rect.H:R}:{layer.BlockScale:R}"));
+        if (pixelates.Length == 0)
+        {
+            _pixelatedBackgroundBitmap?.Dispose();
+            _pixelatedBackgroundBitmap = null;
+            _pixelateSignature = string.Empty;
+            return _backgroundBitmap;
+        }
+        if (_pixelatedBackgroundBitmap is not null
+            && string.Equals(signature, _pixelateSignature, StringComparison.Ordinal))
+        {
+            return _pixelatedBackgroundBitmap;
+        }
+
+        _pixelatedBackgroundBitmap?.Dispose();
+        _pixelatedBackgroundBitmap = LayerRenderer.ApplyPixelate(
+            _backgroundBitmap,
+            pixelates);
+        _pixelateSignature = signature;
+        return _pixelatedBackgroundBitmap;
+    }
+
+    private void DrawCompositionGuides(SKCanvas canvas)
+    {
+        var committedIds = State.Layers.Elements.Select(layer => layer.Id).ToHashSet();
+        foreach (var layer in State.DisplayLayers)
+        {
+            if (layer.Kind == LayerKind.Crop)
+            {
+                ToolRegistry.DescriptorFor(LayerKind.Crop)?.Draw(
+                    layer,
+                    canvas,
+                    layer.LineWidth,
+                    layer.FontSize);
+            }
+            else if (layer.Kind == LayerKind.Pixelate && !committedIds.Contains(layer.Id))
+            {
+                var rect = layer.Rect.Standardized();
+                using var placeholder = new SKPaint
+                {
+                    Color = new SKColor(128, 128, 128, 150),
+                    Style = SKPaintStyle.Fill
+                };
+                canvas.DrawRect(
+                    new SKRect(
+                        (float)rect.MinX,
+                        (float)rect.MinY,
+                        (float)rect.MaxX,
+                        (float)rect.MaxY),
+                    placeholder);
+            }
+        }
     }
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
@@ -359,5 +430,7 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
 
         _backgroundBitmap?.Dispose();
         _backgroundBitmap = null;
+        _pixelatedBackgroundBitmap?.Dispose();
+        _pixelatedBackgroundBitmap = null;
     }
 }

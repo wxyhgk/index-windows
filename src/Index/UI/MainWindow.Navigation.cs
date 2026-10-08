@@ -175,12 +175,14 @@ public sealed partial class MainWindow
             _galleryCommands,
             _theme);
         applicationsView.PreviewRequested += OpenPreview;
+        applicationsView.EditRequested += OpenEditor;
         var lease = new MainPageLease(
             new MainPageIdentity(MainNavigationPage.Apps),
             MainPageMount.Destination,
             applicationsView);
         lease.Own(applicationsView);
         lease.OnDispose(() => applicationsView.PreviewRequested -= OpenPreview);
+        lease.OnDispose(() => applicationsView.EditRequested -= OpenEditor);
         if (_pageOwner.CommitOrDispose(
                 lease,
                 _navigation.Generation,
@@ -200,6 +202,7 @@ public sealed partial class MainWindow
     {
         _libraryWorkspaceController.CancelCurrent();
         ClosePreview(refreshSource: false);
+        CloseEditor(refreshSource: false);
     }
 
     private Button MakeButton(string title, bool compact = false) => new()

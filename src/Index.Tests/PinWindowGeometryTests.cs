@@ -1,4 +1,6 @@
 using Index.Pin;
+using Index.Ocr;
+using Index.Render;
 
 namespace Index.Tests;
 
@@ -102,6 +104,32 @@ public sealed class PinWindowGeometryTests
         Assert.Equal(outerWidth * (1 + PinHighlight.Thickness * 2) * 4, result.Length);
         Assert.Equal(new byte[] { 0xFF, 0xA3, 0x69, 0xFF }, result[..4]);
         Assert.Equal(image, result[imageOffset..(imageOffset + image.Length)]);
+    }
+
+    [Fact]
+    public void HighlightedPin_ComposesOcrSelectionWithoutMutatingSourcePixels()
+    {
+        byte[] sourcePixels =
+        [
+            255, 255, 255, 255,
+            255, 255, 255, 255
+        ];
+        var source = new PinPixelBuffer(sourcePixels, 2, 1);
+
+        var result = PinPixelRenderer.CreateHighlighted(
+            source,
+            imageWidth: 4,
+            imageHeight: 2,
+            selectedTextBounds: [new OcrPixelRect(0, 0, 1, 1)],
+            selectionCoordinateWidth: 2,
+            selectionCoordinateHeight: 1);
+
+        int outerWidth = 4 + PinHighlight.Thickness * 2;
+        int selectedPixel = (PinHighlight.Thickness * outerWidth + PinHighlight.Thickness) * 4;
+        int unselectedPixel = (PinHighlight.Thickness * outerWidth + PinHighlight.Thickness + 3) * 4;
+        Assert.Equal(new byte[] { 255, 255, 255, 255 }, source.Pixels[..4]);
+        Assert.NotEqual(255, result.Pixels[selectedPixel + 1]);
+        Assert.Equal(new byte[] { 255, 255, 255, 255 }, result.Pixels[unselectedPixel..(unselectedPixel + 4)]);
     }
 
     [Fact]

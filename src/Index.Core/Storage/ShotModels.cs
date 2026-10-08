@@ -29,6 +29,44 @@ public sealed record RevisionRecord(
     string? Note,
     string LayersJson);
 
+/// <summary>A complete annotation revision decoded at the storage boundary.</summary>
+public sealed record ShotRevisionSnapshot(
+    long RevisionId,
+    Layers<ImageSpace> Layers)
+{
+    public long? ParentRevisionId { get; init; }
+    public DateTimeOffset CreatedAt { get; init; }
+    public string? Note { get; init; }
+}
+
+public interface IShotRevisionSource
+{
+    Task<ShotRevisionSnapshot?> GetLatestRevisionSnapshotAsync(
+        long shotId,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IShotRevisionHistorySource
+{
+    Task<IReadOnlyList<ShotRevisionSnapshot>> GetRevisionHistoryAsync(
+        long shotId,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IShotRevisionWriter
+{
+    Task<RevisionRecord> AppendRevisionAsync(
+        long shotId,
+        Layers<ImageSpace> layers,
+        string? note = null,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IShotEditorRepository
+    : IShotRevisionSource, IShotRevisionHistorySource, IShotRevisionWriter
+{
+}
+
 public sealed record ShotCaptureMetadata
 {
     public DateTimeOffset CapturedAt { get; init; } = DateTimeOffset.UtcNow;
@@ -146,7 +184,8 @@ public interface IShotCaptureWriter
         CancellationToken cancellationToken = default);
 }
 
-public interface IShotStore : IShotCaptureWriter, IShotGallerySource, IShotApplicationSource
+public interface IShotStore
+    : IShotCaptureWriter, IShotGallerySource, IShotApplicationSource, IShotEditorRepository
 {
     Task<IReadOnlyList<ShotRecord>> GetRecentAsync(
         int limit = 300,
@@ -158,12 +197,6 @@ public interface IShotStore : IShotCaptureWriter, IShotGallerySource, IShotAppli
 
     Task<IReadOnlyList<RevisionRecord>> GetRevisionsAsync(
         long shotId,
-        CancellationToken cancellationToken = default);
-
-    Task<RevisionRecord> AppendRevisionAsync(
-        long shotId,
-        Layers<ImageSpace> layers,
-        string? note = null,
         CancellationToken cancellationToken = default);
 
     Task<bool> DeleteAsync(long shotId, CancellationToken cancellationToken = default);

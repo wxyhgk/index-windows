@@ -84,6 +84,30 @@ public sealed class ShotStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task LatestRevisionSnapshotReturnsTypedCompleteLayerState()
+    {
+        var store = await ShotStore.OpenAsync(_root);
+        var saved = await store.SaveCaptureAsync(
+            MakePng(40, 30), Metadata(40, 30), new Layers<ImageSpace>());
+        var layers = MakeLayers();
+        layers.Elements[0].BlockScale = 2.5;
+        layers.Elements[0].Dim = 0.45;
+        var appended = await store.AppendRevisionAsync(saved.Shot.Id, layers, "编辑");
+
+        var snapshot = await store.GetLatestRevisionSnapshotAsync(saved.Shot.Id);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(appended.Id, snapshot!.RevisionId);
+        var layer = Assert.Single(snapshot.Layers.Elements);
+        Assert.Equal(layers.Elements[0].Id, layer.Id);
+        Assert.Equal(LayerKind.Rect, layer.Kind);
+        Assert.Equal(new LRect(2, 3, 30, 20), layer.Rect);
+        Assert.Equal(3, layer.LineWidth);
+        Assert.Equal(2.5, layer.BlockScale);
+        Assert.Equal(0.45, layer.Dim);
+    }
+
+    [Fact]
     public async Task DeleteKeepsSharedOriginalUntilLastReferenceIsGone()
     {
         var store = await ShotStore.OpenAsync(_root);

@@ -1,4 +1,5 @@
 using Index.Pin;
+using Index.Ocr;
 using Index.Render;
 
 namespace Index.Platform.Windowing;
@@ -11,7 +12,12 @@ internal sealed class NativePinPresentation : IDisposable
 {
     private readonly PinPixelBuffer _source;
     private NativePinSurface? _surface;
+    private PinPixelBuffer? _resizedImage;
     private PinPixelBuffer? _currentPixels;
+    private IReadOnlyList<OcrPixelRect> _selectedTextBounds = [];
+    private int _selectionCoordinateWidth;
+    private int _selectionCoordinateHeight;
+    private byte _opacity = byte.MaxValue;
     private bool _disposed;
 
     public NativePinPresentation(PinPixelBuffer source)
@@ -22,6 +28,12 @@ internal sealed class NativePinPresentation : IDisposable
     public event Action<PinRect>? FrameChanged;
     public event Action<int, bool>? WheelChanged;
     public event Action? CloseRequested;
+    public event Action<double, double>? TextPointerPressed;
+    public event Action<double, double>? TextPointerMoved;
+    public event Action<double, double>? TextPointerReleased;
+    public event Action? TextPointerCanceled;
+    public event Action<PinTextCommand>? TextCommandRequested;
+    public event Action<bool>? HoverChanged;
 
     public bool IsActive => _surface is not null;
 
@@ -40,6 +52,7 @@ internal sealed class NativePinPresentation : IDisposable
         Bind(surface);
         try
         {
+            _opacity = opacity;
             _currentPixels = PreparePixels(imageFrame);
             surface.Show(
                 PinHighlight.OuterFrame(imageFrame),
@@ -58,6 +71,7 @@ internal sealed class NativePinPresentation : IDisposable
     public void Update(PinRect imageFrame, byte opacity)
     {
         var surface = ActiveSurface();
+        _opacity = opacity;
         _currentPixels = PreparePixels(imageFrame);
         surface.Update(
             PinHighlight.OuterFrame(imageFrame),
@@ -65,6 +79,31 @@ internal sealed class NativePinPresentation : IDisposable
             _currentPixels.Width,
             _currentPixels.Height,
             opacity);
+    }
+
+    public void EnableTextInteraction(Func<double, double, bool> hitTest)
+    {
+        ArgumentNullException.ThrowIfNull(hitTest);
+        ActiveSurface().TextHitTest = hitTest;
+    }
+
+    public void UpdateTextSelection(
+        IReadOnlyList<OcrPixelRect> selectedBounds,
+        int coordinateWidth,
+        int coordinateHeight)
+    {
+        ArgumentNullException.ThrowIfNull(selectedBounds);
+        if (coordinateWidth <= 0)
+            throw new ArgumentOutOfRangeException(nameof(coordinateWidth));
+        if (coordinateHeight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(coordinateHeight));
+
+        _selectedTextBounds = selectedBounds.ToArray();
+        _selectionCoordinateWidth = coordinateWidth;
+        _selectionCoordinateHeight = coordinateHeight;
+        _currentPixels = null;
+        var imageFrame = PinHighlight.ImageFrame(ActiveSurface().CurrentFrame);
+        Update(imageFrame, _opacity);
     }
 
     public void Dispose()
@@ -87,7 +126,20 @@ internal sealed class NativePinPresentation : IDisposable
         {
             return current;
         }
-        return PinPixelRenderer.CreateHighlighted(_source, width, height);
+        if (_resizedImage is not { } resized
+            || resized.Width != width
+            || resized.Height != height)
+        {
+            resized = PinPixelRenderer.Resize(_source, width, height);
+            _resizedImage = resized;
+        }
+        return PinPixelRenderer.CreateHighlighted(
+            resized,
+            width,
+            height,
+            _selectedTextBounds,
+            _selectionCoordinateWidth,
+            _selectionCoordinateHeight);
     }
 
     private NativePinSurface ActiveSurface()
@@ -102,18 +154,32 @@ internal sealed class NativePinPresentation : IDisposable
         surface.FrameChanged += OnFrameChanged;
         surface.WheelChanged += OnWheelChanged;
         surface.CloseRequested += OnCloseRequested;
+        surface.TextPointerPressed += OnTextPointerPressed;
+        surface.TextPointerMoved += OnTextPointerMoved;
+        surface.TextPointerReleased += OnTextPointerReleased;
+        surface.TextPointerCanceled += OnTextPointerCanceled;
+        surface.TextCommandRequested += OnTextCommandRequested;
+        surface.HoverChanged += OnHoverChanged;
     }
 
     private void ReleaseSurface()
     {
         var surface = _surface;
         _surface = null;
+        _resizedImage = null;
         _currentPixels = null;
         if (surface is null) return;
 
         surface.FrameChanged -= OnFrameChanged;
         surface.WheelChanged -= OnWheelChanged;
         surface.CloseRequested -= OnCloseRequested;
+        surface.TextPointerPressed -= OnTextPointerPressed;
+        surface.TextPointerMoved -= OnTextPointerMoved;
+        surface.TextPointerReleased -= OnTextPointerReleased;
+        surface.TextPointerCanceled -= OnTextPointerCanceled;
+        surface.TextCommandRequested -= OnTextCommandRequested;
+        surface.HoverChanged -= OnHoverChanged;
+        surface.TextHitTest = null;
         surface.Dispose();
     }
 
@@ -123,4 +189,27 @@ internal sealed class NativePinPresentation : IDisposable
         WheelChanged?.Invoke(delta, controlDown);
 
     private void OnCloseRequested() => CloseRequested?.Invoke();
+
+    private void OnTextPointerPressed(double x, double y) =>
+        TextPointerPressed?.Invoke(x, y);
+
+    private void OnTextPointerMoved(double x, double y) =>
+        TextPointerMoved?.Invoke(x, y);
+
+    private void OnTextPointerReleased(double x, double y) =>
+        TextPointerReleased?.Invoke(x, y);
+
+    private void OnTextPointerCanceled() => TextPointerCanceled?.Invoke();
+
+    private void OnTextCommandRequested(PinTextCommand command) =>
+        TextCommandRequested?.Invoke(command);
+
+    private void OnHoverChanged(bool hovering) => HoverChanged?.Invoke(hovering);
+}
+
+internal enum PinTextCommand
+{
+    Copy,
+    SelectAll,
+    Escape
 }

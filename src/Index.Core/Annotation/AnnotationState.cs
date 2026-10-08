@@ -226,6 +226,7 @@ public sealed class AnnotationState
         if (Tool.Value == AnnotationTool.Text)
         {
             EditingTextId = layer.Id;
+            SelectedId = layer.Id;
         }
         else
         {
@@ -298,6 +299,36 @@ public sealed class AnnotationState
         _resizeOriginal = null;
         _resizeStartPoint = null;
         Layers = new Layers<CanvasSpace>();
+        PixelatePreviews.Clear();
+        History.Reset();
+        PublishChange();
+    }
+
+    /// <summary>
+    /// Replaces the editable canvas with a complete persisted image-space revision.
+    /// The editor canvas uses image pixels as its native coordinate system, so this
+    /// is an identity projection. Transient gestures, selection and undo history are reset.
+    /// </summary>
+    public void LoadImageLayers(Layers<ImageSpace> source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        SelectedId = null;
+        _dragStart = null;
+        _dragCurrent = null;
+        _constrainDragGeometry = false;
+        _moveId = null;
+        _moveLastPoint = null;
+        _moveFromRect = null;
+        ResizeId = null;
+        ActiveResizeHandle = null;
+        _resizeOriginal = null;
+        _resizeStartPoint = null;
+        EditingTextId = null;
+        MarkedText = null;
+        Layers = new Layers<CanvasSpace>();
+        foreach (var layer in source.Elements)
+            Layers.Append(layer with { });
         PixelatePreviews.Clear();
         History.Reset();
         PublishChange();
@@ -516,11 +547,46 @@ public sealed class AnnotationState
 
     // MARK: - 文字编辑
 
+    /// <summary>
+    /// Updates the contents of an existing text layer. Consecutive changes to the
+    /// same layer are coalesced by <see cref="AnnotationHistory"/>, so typing in a
+    /// UI editor remains a single undoable operation. Non-text and missing layer
+    /// identifiers are rejected without mutating state.
+    /// </summary>
+    public bool SetText(Guid id, string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (Layers.FirstIndex(id) is not int idx) return false;
+
+        var before = Layers.Elements[idx];
+        if (before.Kind != LayerKind.Text || string.Equals(before.Text, text, StringComparison.Ordinal))
+            return false;
+
+        var after = before with { Text = text };
+        Layers.Elements[idx] = after;
+        if (EditingTextId != id)
+            History.RecordStyle(id, before, after);
+        PublishChange();
+        return true;
+    }
+
     public void EndTextEditing()
     {
-        if (!EditingTextId.HasValue) return;
+        if (EditingTextId is not { } editingId) return;
         EditingTextId = null;
         MarkedText = null;
+        if (Layers.FirstIndex(editingId) is int index)
+        {
+            var draft = Layers.Elements[index];
+            if (string.IsNullOrWhiteSpace(draft.Text))
+            {
+                Layers.Remove(editingId);
+                if (SelectedId == editingId)
+                    SelectedId = null;
+            }
+            else
+                History.Record(new AnnotationHistory.Mutation.Add(draft, null));
+        }
         PublishChange();
     }
 
@@ -528,7 +594,12 @@ public sealed class AnnotationState
 
     public bool Undo()
     {
+        bool discardedEmptyTextDraft = EditingTextId is { } editingId
+            && Layers.FirstIndex(editingId) is int textIndex
+            && string.IsNullOrWhiteSpace(Layers.Elements[textIndex].Text);
         EndTextEditing();
+        if (discardedEmptyTextDraft)
+            return true;
         if (History.PopUndo() is not { } mutation) return false;
         Revert(mutation);
         History.PushRedo(mutation);

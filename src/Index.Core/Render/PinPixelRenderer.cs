@@ -1,4 +1,5 @@
 using Index.Pin;
+using Index.Ocr;
 using SkiaSharp;
 
 namespace Index.Render;
@@ -91,15 +92,70 @@ public static class PinPixelRenderer
     public static PinPixelBuffer CreateHighlighted(
         PinPixelBuffer source,
         int imageWidth,
-        int imageHeight)
+        int imageHeight,
+        IReadOnlyList<OcrPixelRect>? selectedTextBounds = null,
+        int selectionCoordinateWidth = 0,
+        int selectionCoordinateHeight = 0)
     {
         var image = Resize(source, imageWidth, imageHeight);
+        byte[] imagePixels = selectedTextBounds is { Count: > 0 }
+            ? ComposeTextSelection(
+                image,
+                selectedTextBounds,
+                selectionCoordinateWidth,
+                selectionCoordinateHeight)
+            : image.Pixels;
         return new PinPixelBuffer(
             PinHighlight.ComposePremultipliedBgra(
-                image.Pixels,
+                imagePixels,
                 image.Width,
                 image.Height),
             checked(image.Width + PinHighlight.Thickness * 2),
             checked(image.Height + PinHighlight.Thickness * 2));
+    }
+
+    private static byte[] ComposeTextSelection(
+        PinPixelBuffer image,
+        IReadOnlyList<OcrPixelRect> selectedTextBounds,
+        int coordinateWidth,
+        int coordinateHeight)
+    {
+        if (coordinateWidth <= 0)
+            throw new ArgumentOutOfRangeException(nameof(coordinateWidth));
+        if (coordinateHeight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(coordinateHeight));
+
+        var pixels = image.Pixels.ToArray();
+        double scaleX = image.Width / (double)coordinateWidth;
+        double scaleY = image.Height / (double)coordinateHeight;
+        foreach (var bounds in selectedTextBounds)
+        {
+            var normalized = bounds.Normalized();
+            int left = Math.Clamp((int)Math.Floor(normalized.X * scaleX), 0, image.Width);
+            int top = Math.Clamp((int)Math.Floor(normalized.Y * scaleY), 0, image.Height);
+            int right = Math.Clamp((int)Math.Ceiling(normalized.Right * scaleX), 0, image.Width);
+            int bottom = Math.Clamp((int)Math.Ceiling(normalized.Bottom * scaleY), 0, image.Height);
+            for (int y = top; y < bottom; y++)
+            {
+                for (int x = left; x < right; x++)
+                {
+                    bool stroke = x == left || x == right - 1 || y == top || y == bottom - 1;
+                    BlendBlue(pixels, (y * image.Width + x) * 4, stroke ? (byte)210 : (byte)72);
+                }
+            }
+        }
+        return pixels;
+    }
+
+    private static void BlendBlue(byte[] pixels, int offset, byte alpha)
+    {
+        const byte blue = 0xFF;
+        const byte green = 0x7D;
+        const byte red = 0x2F;
+        int inverse = byte.MaxValue - alpha;
+        pixels[offset] = (byte)((blue * alpha + pixels[offset] * inverse + 127) / 255);
+        pixels[offset + 1] = (byte)((green * alpha + pixels[offset + 1] * inverse + 127) / 255);
+        pixels[offset + 2] = (byte)((red * alpha + pixels[offset + 2] * inverse + 127) / 255);
+        pixels[offset + 3] = (byte)(alpha + (pixels[offset + 3] * inverse + 127) / 255);
     }
 }

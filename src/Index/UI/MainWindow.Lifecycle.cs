@@ -16,8 +16,7 @@ public sealed partial class MainWindow
                 return;
             if (_navigation.IsAppsWorkspace)
             {
-                if (_previewView is not null
-                    && _contentHost.IsOverlayVisible(_previewView))
+                if (IsWorkspaceOverlayVisible())
                 {
                     _applicationsRefreshPending = true;
                     return;
@@ -27,8 +26,7 @@ public sealed partial class MainWindow
             }
             if (!_navigation.IsLibraryShots)
                 return;
-            if (_previewView is not null
-                && _contentHost.IsOverlayVisible(_previewView))
+            if (IsWorkspaceOverlayVisible())
             {
                 _galleryRefreshPending = true;
                 return;
@@ -47,6 +45,7 @@ public sealed partial class MainWindow
         RunCloseStep(() => _ = _coordinator.BeginShutdown());
         RunCloseStep(CancelTrayMemoryTrim);
         RunCloseStep(() => ClosePreview(refreshSource: false));
+        RunCloseStep(() => CloseEditor(refreshSource: false));
         RunCloseStep(_pageOwner.Dispose);
         RunCloseStep(_libraryWorkspaceController.Dispose);
         RunCloseStep(() => _previewView?.Dispose());

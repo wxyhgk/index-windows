@@ -99,8 +99,9 @@ internal sealed class OverlayVisualTree
             Visibility = Visibility.Collapsed,
             Background = new SolidColorBrush(Colors.Transparent)
         };
-
+        LiveTextOverlay = new OcrTextOverlayView();
         selectionCanvas.Children.Add(AnnotationCanvas);
+        selectionCanvas.Children.Add(LiveTextOverlay);
         selectionCanvas.Children.Add(SelectionBorder);
         selectionCanvas.Children.Add(SizeLabel);
         selectionCanvas.Children.Add(Toolbar);
@@ -124,6 +125,7 @@ internal sealed class OverlayVisualTree
     public Shape[] Handles { get; }
     public ToolbarView Toolbar { get; }
     public AnnotationCanvasView AnnotationCanvas { get; }
+    public OcrTextOverlayView LiveTextOverlay { get; }
     public Border SizeLabel { get; }
     public TextBlock SizeLabelText { get; }
 }

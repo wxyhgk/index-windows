@@ -79,6 +79,19 @@ public sealed class GalleryShotCommandServiceTests
         Assert.Equal(shot, dependencies.AssetOpener.Opened);
     }
 
+    [Fact]
+    public async Task CopyOriginalPathUsesValidatedPathResolverAndTextClipboard()
+    {
+        var dependencies = new Dependencies();
+        var service = dependencies.CreateService();
+
+        string path = await service.CopyOriginalPathAsync(Shot());
+
+        Assert.Equal(@"C:\Index\originals\shot.png", path);
+        Assert.Equal(path, dependencies.Clipboard.Text);
+        Assert.Equal(Shot().Id, dependencies.AssetOpener.Resolved?.Id);
+    }
+
     private static ShotRecord Shot(string? sourceUrl = null) => new(
         42,
         "sha",
@@ -118,6 +131,7 @@ public sealed class GalleryShotCommandServiceTests
             Repository,
             Repository,
             Assets,
+            AssetOpener,
             AssetOpener,
             UriOpener,
             Clipboard,
@@ -172,9 +186,10 @@ public sealed class GalleryShotCommandServiceTests
             CancellationToken cancellationToken = default) => Task.FromResult(result);
     }
 
-    private sealed class FakeAssetOpener : IShotAssetOpener
+    private sealed class FakeAssetOpener : IShotAssetOpener, IShotAssetPathResolver
     {
         public ShotRecord? Opened { get; private set; }
+        public ShotRecord? Resolved { get; private set; }
 
         public Task OpenOriginalAsync(
             ShotRecord shot,
@@ -182,6 +197,14 @@ public sealed class GalleryShotCommandServiceTests
         {
             Opened = shot;
             return Task.CompletedTask;
+        }
+
+        public Task<string> ResolveOriginalPathAsync(
+            ShotRecord shot,
+            CancellationToken cancellationToken = default)
+        {
+            Resolved = shot;
+            return Task.FromResult(@"C:\Index\originals\shot.png");
         }
     }
 
@@ -194,7 +217,8 @@ public sealed class GalleryShotCommandServiceTests
     private sealed class FakeClipboard : IClipboardWriter
     {
         public byte[]? Png { get; private set; }
-        public void WriteText(string text) { }
+        public string? Text { get; private set; }
+        public void WriteText(string text) => Text = text;
         public ValueTask WritePngAsync(
             ReadOnlyMemory<byte> pngData,
             CancellationToken cancellationToken = default)

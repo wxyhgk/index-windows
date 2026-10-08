@@ -43,13 +43,19 @@ public sealed class DimensionTool : AnnotationToolDescriptorBase
             using var textPaint = new SKPaint
             {
                 Color = layer.Color.ToSKColor(),
-                TextSize = (float)fontSize,
                 IsAntialias = true
             };
-            float textWidth = textPaint.MeasureText(layer.Text);
+            using var textFont = new SKFont(SKTypeface.Default, (float)fontSize);
+            float textWidth = textFont.MeasureText(layer.Text);
             float textX = (float)rect.MidX - textWidth / 2;
             float textY = (float)(rect.MaxY + fontSize + 4);
-            canvas.DrawText(layer.Text, textX, textY, textPaint);
+            canvas.DrawText(
+                layer.Text,
+                textX,
+                textY,
+                SKTextAlign.Left,
+                textFont,
+                textPaint);
         }
     }
 }

@@ -2,6 +2,8 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Index.Annotation;
+using Index.Render;
 using Index.Storage;
 
 namespace Index.Platform;
@@ -51,6 +53,17 @@ public sealed class WindowsShotAssetReader : IShotAssetReader
     {
         ArgumentNullException.ThrowIfNull(shot);
 
+        var revision = await ReadLatestRevisionAsync(shot, cancellationToken);
+        if (revision.Snapshot is { Layers.IsEmpty: false } snapshot)
+        {
+            var rendered = await RenderRevisionAsync(
+                shot,
+                snapshot,
+                preview: true,
+                cancellationToken);
+            return AddWarning(rendered, revision.Warning);
+        }
+
         // Lossless thumbnail migration is a storage concern. Keeping it in this
         // adapter prevents views from learning the concrete on-disk layout.
         try
@@ -69,7 +82,11 @@ public sealed class WindowsShotAssetReader : IShotAssetReader
 
         var thumbnail = await ReadFirstThumbnailAsync(shot, cancellationToken);
         if (thumbnail.HasData)
-            return thumbnail with { Status = ShotAssetStatus.ThumbnailFallback };
+        {
+            return AddWarning(
+                thumbnail with { Status = ShotAssetStatus.ThumbnailFallback },
+                revision.Warning);
+        }
 
         var original = await ReadCandidateAsync(
             _store.OriginalPath(shot),
@@ -77,15 +94,94 @@ public sealed class WindowsShotAssetReader : IShotAssetReader
             cancellationToken);
         if (original.HasData)
         {
-            return original with
+            return AddWarning(original with
             {
                 Warning = thumbnail.Status == ShotAssetStatus.Corrupt
                     ? "缩略图损坏，当前使用原图预览"
                     : null
-            };
+            }, revision.Warning);
         }
 
-        return FailureResult(original, thumbnail);
+        return AddWarning(FailureResult(original, thumbnail), revision.Warning);
+    }
+
+    public async Task<ShotAssetReadResult> ReadRenderedAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(shot);
+        var revision = await ReadLatestRevisionAsync(shot, cancellationToken);
+        if (revision.Snapshot is not { Layers.IsEmpty: false } snapshot)
+            return AddWarning(await ReadBestAvailableAsync(shot, cancellationToken), revision.Warning);
+        var rendered = await RenderRevisionAsync(
+            shot,
+            snapshot,
+            preview: false,
+            cancellationToken);
+        return AddWarning(rendered, revision.Warning);
+    }
+
+    private async Task<ShotAssetReadResult> RenderRevisionAsync(
+        ShotRecord shot,
+        ShotRevisionSnapshot revision,
+        bool preview,
+        CancellationToken cancellationToken)
+    {
+        var source = await ReadBestAvailableAsync(shot, cancellationToken);
+        if (!source.HasData)
+            return source;
+
+        try
+        {
+            byte[] rendered = await Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                byte[] basePng = source.Data.ToArray();
+                Layers<ImageSpace> layers = revision.Layers;
+                if (source.Status == ShotAssetStatus.ThumbnailFallback)
+                {
+                    using var stream = new MemoryStream(basePng, writable: false);
+                    using var bitmap = new Bitmap(stream);
+                    double scaleX = bitmap.Width / (double)Math.Max(1, shot.PixelWidth);
+                    double scaleY = bitmap.Height / (double)Math.Max(1, shot.PixelHeight);
+                    layers = revision.Layers.Projected(
+                        new LRect(0, 0, shot.PixelWidth, shot.PixelHeight),
+                        scaleX,
+                        scaleY);
+                }
+
+                return preview
+                    ? CaptureArtifactRenderer.RenderPreviewPng(basePng, layers)
+                    : CaptureArtifactRenderer.RenderPng(basePng, layers);
+            }, cancellationToken).ConfigureAwait(false);
+            return source with { Data = rendered };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            return AddWarning(source, $"标注渲染失败，当前显示原图：{error.Message}");
+        }
+    }
+
+    private async Task<(ShotRevisionSnapshot? Snapshot, string? Warning)> ReadLatestRevisionAsync(
+        ShotRecord shot,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await _store.GetLatestRevisionSnapshotAsync(shot.Id, cancellationToken), null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            return (null, $"标注数据损坏，当前显示原图：{error.Message}");
+        }
     }
 
     private async Task<ShotAssetReadResult> ReadFirstThumbnailAsync(
@@ -187,6 +283,18 @@ public sealed class WindowsShotAssetReader : IShotAssetReader
         }
 
         return Missing();
+    }
+
+    private static ShotAssetReadResult AddWarning(
+        ShotAssetReadResult result,
+        string? warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+            return result;
+        string combined = string.IsNullOrWhiteSpace(result.Warning)
+            ? warning
+            : $"{result.Warning}；{warning}";
+        return result with { Warning = combined };
     }
 
     private static ShotAssetReadResult Missing() => new(

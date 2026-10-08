@@ -1,6 +1,7 @@
 using Index.App;
 using Index.Clipboard;
 using Index.Capture;
+using Index.Editor;
 using Index.Gallery;
 using Index.Navigation;
 using Index.Platform;
@@ -12,6 +13,7 @@ using Index.Storage;
 using Index.UI.Applications;
 using Index.UI.Clipboard;
 using Index.UI.Gallery;
+using Index.UI.Editor;
 using Index.UI.Search;
 using Index.UI.Settings;
 using Microsoft.UI.Xaml;
@@ -32,6 +34,7 @@ public sealed partial class MainWindow : Window
     private readonly ICapturedApplicationsWorkspaceControllerFactory _applicationsWorkspaceControllers;
     private readonly IShotAssetReader _shotAssets;
     private readonly GalleryShotCommandService _galleryCommands;
+    private readonly IShotEditorSessionFactory _editorSessions;
     private readonly IRecognitionPluginRegistry _recognitionPlugins;
     private readonly LibraryWorkspaceController _libraryWorkspaceController;
     private readonly MainContentHost _contentHost = new();
@@ -45,6 +48,8 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<LibrarySection, Button> _subButtons = new();
     private ShotPreviewView? _previewView;
     private ShotGalleryGridView? _previewGallery;
+    private ShotEditorWorkspaceView? _editorView;
+    private IShotPageSource? _editorShotSource;
     private bool _galleryRefreshPending;
     private bool _applicationsRefreshPending;
     private bool _isClosing;
@@ -64,6 +69,7 @@ public sealed partial class MainWindow : Window
         ICapturedApplicationsWorkspaceControllerFactory applicationsWorkspaceControllers,
         IShotAssetReader shotAssets,
         GalleryShotCommandService galleryCommands,
+        IShotEditorSessionFactory editorSessions,
         IRecognitionPluginRegistry recognitionPlugins)
     {
         _coordinator = coordinator;
@@ -78,6 +84,7 @@ public sealed partial class MainWindow : Window
             ?? throw new ArgumentNullException(nameof(applicationsWorkspaceControllers));
         _shotAssets = shotAssets;
         _galleryCommands = galleryCommands;
+        _editorSessions = editorSessions ?? throw new ArgumentNullException(nameof(editorSessions));
         _recognitionPlugins = recognitionPlugins;
         _libraryWorkspaceController = libraryWorkspaceController
             ?? throw new ArgumentNullException(nameof(libraryWorkspaceController));

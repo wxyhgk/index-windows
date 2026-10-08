@@ -79,6 +79,37 @@ public sealed class ToolbarLogicTests
     }
 
     [Fact]
+    public void LiveTextAppearsOnlyWhenHostProvidesTheCapability()
+    {
+        bool active = false;
+        var capabilities = new ToolbarHostCapabilities(
+            new Dictionary<ToolbarHostMode, ToolbarHostModeCapability>
+            {
+                [ToolbarHostMode.LiveText] = new(
+                    () => active,
+                    () => active = true,
+                    () => active = false)
+            });
+        var context = new ToolbarContext(
+            new AnnotationState(),
+            ToolbarScope.Capture,
+            _ => { },
+            capabilities);
+        var registry = new ToolbarRegistry();
+        BuiltinToolbarControls.RegisterCaptureDefaults(registry);
+
+        var liveText = registry.ControlsFor(context).Single(control =>
+            control.Id == ToolbarCommandIds.LiveText);
+        liveText.Activate(context);
+
+        Assert.True(active);
+        Assert.True(liveText.IsSelected(context));
+        Assert.DoesNotContain(
+            BuiltinControlsWithoutCapabilities(),
+            control => control.Id == ToolbarCommandIds.LiveText);
+    }
+
+    [Fact]
     public void CommandControl_UsesHostEnabledPolicy()
     {
         var control = new CommandToolbarControl(
@@ -100,7 +131,7 @@ public sealed class ToolbarLogicTests
     }
 
     [Fact]
-    public void PinnedDefaults_ExposeCopySaveAndCloseOnly()
+    public void PinnedDefaults_ExposeTextCopyImageCopySaveAndClose()
     {
         var registry = new ToolbarRegistry();
         BuiltinToolbarControls.RegisterPinnedDefaults(registry);
@@ -109,8 +140,21 @@ public sealed class ToolbarLogicTests
         var ids = registry.ControlsFor(context).Select(control => control.Id).ToArray();
 
         Assert.Equal(
-            [ToolbarCommandIds.Copy, ToolbarCommandIds.Save, ToolbarCommandIds.Close],
+            [
+                ToolbarCommandIds.CopyText,
+                ToolbarCommandIds.Copy,
+                ToolbarCommandIds.Save,
+                ToolbarCommandIds.Close
+            ],
             ids);
+        Assert.All(
+            registry.ControlsFor(context),
+            control => Assert.False(control.ShowsLabel));
+        Assert.All(
+            registry.ControlsFor(context),
+            control => Assert.Equal(
+                ToolbarLayout.IconButtonWidth,
+                control.PreferredWidth(context)));
     }
 
     [Fact]
@@ -152,6 +196,23 @@ public sealed class ToolbarLogicTests
         Assert.DoesNotContain(more.Descriptors, descriptor => descriptor.IsPinnedToBar);
         Assert.DoesNotContain(more.Descriptors, descriptor =>
             descriptor.Tool is AnnotationTool.Text or AnnotationTool.Pixelate or AnnotationTool.Crop);
+    }
+
+    [Fact]
+    public void EditorAnnotationDefaults_ExposeTextPixelateAndCrop()
+    {
+        var registry = new ToolbarRegistry();
+        AnnotationToolbarControls.RegisterEditorAnnotationDefaults(registry);
+
+        var controls = registry.ControlsFor(Context);
+
+        Assert.Contains(controls, control =>
+            control.Id == AnnotationToolbarControlIds.Tool(AnnotationTool.Text));
+        Assert.Contains(controls, control =>
+            control.Id == AnnotationToolbarControlIds.Tool(AnnotationTool.Pixelate));
+        var more = Assert.IsType<MoreAnnotationToolsToolbarControl>(
+            controls.Single(control => control.Id == AnnotationToolbarControlIds.MoreTools));
+        Assert.Contains(more.Descriptors, descriptor => descriptor.Tool == AnnotationTool.Crop);
     }
 
     [Fact]
@@ -211,4 +272,11 @@ public sealed class ToolbarLogicTests
         new CommandToolbarControl(
             "style.color", "C", "Color", ToolbarGroup.Style, 0, false, ToolbarScope.Capture)
     ];
+
+    private static IReadOnlyList<IToolbarControl> BuiltinControlsWithoutCapabilities()
+    {
+        var registry = new ToolbarRegistry();
+        BuiltinToolbarControls.RegisterCaptureDefaults(registry);
+        return registry.ControlsFor(Context);
+    }
 }

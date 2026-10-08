@@ -298,7 +298,7 @@ internal sealed class UnifiedSearchView : UserControl, IDisposable
         {
             if (entry.Shot is { } shot)
             {
-                var asset = await _shotAssets.ReadBestAvailableAsync(shot);
+                var asset = await _shotAssets.ReadRenderedAsync(shot);
                 await _clipboard.WritePngAsync(asset.Data);
             }
             else if (entry.ClipboardItem is { } item)
