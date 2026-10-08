@@ -57,15 +57,13 @@ Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{ap
 [Code]
 function IsDotNet9DesktopInstalled: Boolean;
 var
-  Found: Integer;
-  FileName: String;
+  SearchRec: TSearchRec;
 begin
   Result := False;
-  Found := 0;
-  if FindFirst('C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.*', faDirectory, FileName, Found) then
+  if FindFirst('C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.*', SearchRec) then
   begin
     Result := True;
-    FindClose(Found);
+    FindClose(SearchRec);
   end;
 end;
 
