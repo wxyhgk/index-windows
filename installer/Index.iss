@@ -55,18 +55,6 @@ Name: "{autoprograms}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{a
 Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Code]
-function IsDotNet9DesktopInstalled: Boolean;
-var
-  SearchRec: TSearchRec;
-begin
-  Result := False;
-  if FindFirst('C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\9.0.*', SearchRec) then
-  begin
-    Result := True;
-    FindClose(SearchRec);
-  end;
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -74,13 +62,10 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    if not IsDotNet9DesktopInstalled then
+    RuntimePath := ExpandConstant('{tmp}\windowsdesktop-runtime-9.0-win-x64.exe');
+    if FileExists(RuntimePath) then
     begin
-      RuntimePath := ExpandConstant('{tmp}\windowsdesktop-runtime-9.0-win-x64.exe');
-      if FileExists(RuntimePath) then
-      begin
-        Exec(RuntimePath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-      end;
+      Exec(RuntimePath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;
