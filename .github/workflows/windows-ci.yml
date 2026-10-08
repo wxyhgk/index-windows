@@ -52,12 +52,10 @@ jobs:
       - name: Download .NET 9 Desktop Runtime
         run: |
           New-Item -ItemType Directory -Force -Path installer\runtime
-          # Resolve the latest 9.0.x desktop runtime from the dotnet release API
-          $api = "https://api.nuget.org/v3-flatcontainer/microsoft.windowsdesktop.app.index.json"
-          $versions = Invoke-RestMethod -Uri $api
-          $latest9 = $versions.versions | Where-Object { $_ -match '^9\.0\.' } | Select-Object -Last 1
-          $url = "https://builds.dotnet.microsoft.com/dotnet/Runtime/$latest9/windowsdesktop-runtime-$latest9-win-x64.exe"
-          Write-Host "Downloading $url"
+          $releases = Invoke-RestMethod -Uri "https://builds.dotnet.microsoft.com/dotnet/release-metadata/9.0/releases.json"
+          $version = $releases.releases[0].PSObject.Properties['release-version'].Value
+          $url = "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/$version/windowsdesktop-runtime-$version-win-x64.exe"
+          Write-Host "Downloading .NET Desktop Runtime $version: $url"
           Invoke-WebRequest -Uri $url -OutFile "installer\runtime\windowsdesktop-runtime-9.0-win-x64.exe"
 
       - name: Build installer
