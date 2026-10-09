@@ -59,8 +59,9 @@ var
   ResultCode: Integer;
 begin
   // .NET installer writes version info to WOW6432Node (32-bit registry view).
-  // Use 32-bit reg.exe to ensure we read the correct view.
-  Exec(ExpandConstant('{sys}\SysWOW64\reg.exe'),
+  // {sys} resolves to SysWOW64 in the 32-bit setup.exe, so {sys}\reg.exe
+  // is the 32-bit reg.exe that reads WOW6432Node.
+  Exec(ExpandConstant('{sys}\reg.exe'),
        'query "HKLM\SOFTWARE\dotnet\setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App"',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := (ResultCode = 0);
