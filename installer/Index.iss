@@ -48,24 +48,29 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "runtime\windowsdesktop-runtime-9.0-win-x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Code]
+function IsDotNet9DesktopInstalled: Boolean;
+begin
+  Result := DirExists('C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-  RuntimePath: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    RuntimePath := ExpandConstant('{tmp}\windowsdesktop-runtime-9.0-win-x64.exe');
-    if FileExists(RuntimePath) then
+    if not IsDotNet9DesktopInstalled then
     begin
-      Exec(RuntimePath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      MsgBox(
+        'Index requires the .NET 9 Desktop Runtime.' + #13#10 +
+        'Please download and install it from:' + #13#10 +
+        'https://dotnet.microsoft.com/download/dotnet/9.0' + #13#10 +
+        '(select "Desktop Runtime" x64)',
+        mbInformation, MB_OK);
     end;
   end;
 end;
