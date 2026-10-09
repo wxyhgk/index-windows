@@ -60,6 +60,7 @@ public sealed class OverlayWindow : Window
     private readonly OverlayOcrController _ocrController;
     private readonly OverlayVisualUpdater _visualUpdater;
     private readonly OverlayKeyboardHandler _keyboardHandler;
+    private readonly OverlayCaptureCommand _captureCommand;
     private bool _toolbarRefreshQueued;
     private byte[] _frozenPng = [];
 
@@ -147,6 +148,21 @@ public sealed class OverlayWindow : Window
             () => Coordinates,
             () => _displayDpiScale);
 
+        _captureCommand = new OverlayCaptureCommand(
+            _annotation,
+            _windowTargetController,
+            () => _snapshotIdentity,
+            () => Coordinates,
+            () => _selection,
+            () => _selectionController,
+            () => _previousSelection,
+            () => CaptureRequested,
+            () => CloseOnCapture,
+            Dismiss,
+            SyncSelectionFromController,
+            EnterConfirmedState,
+            RequestCancel);
+
         var capabilities = _ocrTextRecognizer.IsAvailable
             ? new ToolbarHostCapabilities(
                 new Dictionary<ToolbarHostMode, ToolbarHostModeCapability>
@@ -160,9 +176,9 @@ public sealed class OverlayWindow : Window
         _toolbarContext = new ToolbarContext(
             _annotation,
             ToolbarScope.Capture,
-            PerformToolbarCommand,
+            _captureCommand.PerformToolbarCommand,
             capabilities,
-            isActionEnabled: IsToolbarCommandEnabled);
+            isActionEnabled: _captureCommand.IsToolbarCommandEnabled);
 
         _visualUpdater = new OverlayVisualUpdater(
             _selectionBorder,
@@ -194,8 +210,8 @@ public sealed class OverlayWindow : Window
             direction => CycleWindowTarget(direction),
             (point, coords) => _windowTargetController.HasTargetAt(point, coords),
             RequestCancel,
-            ConfirmSelection,
-            ApplyPreviousSelection);
+            _captureCommand.ConfirmSelection,
+            _captureCommand.ApplyPreviousSelection);
 
         // 事件
         _windowTargetController.PixelEdgeDetectionRequested += () => PixelEdgeDetectionRequested?.Invoke(this);
@@ -318,13 +334,13 @@ public sealed class OverlayWindow : Window
             var handle = _visualUpdater.HitTestHandle(pos);
             if (handle.HasValue)
             {
-                controller.BeginResize(ToSelectionHandle(handle.Value), ToSelectionPoint(pos));
+                controller.BeginResize(SelectionPointMapper.ToSelectionHandle(handle.Value), SelectionPointMapper.ToSelectionPoint(pos));
                 _rootGrid.CapturePointer(e.Pointer);
                 return;
             }
             if (_selection.Contains(pos))
             {
-                controller.BeginMove(ToSelectionPoint(pos));
+                controller.BeginMove(SelectionPointMapper.ToSelectionPoint(pos));
                 _rootGrid.CapturePointer(e.Pointer);
                 return;
             }
@@ -337,7 +353,7 @@ public sealed class OverlayWindow : Window
         }
 
         _windowTargetController.ClearCaptureTarget();
-        _windowTargetController.FindPressedTarget(ToSelectionPoint(pos), Coordinates);
+        _windowTargetController.FindPressedTarget(SelectionPointMapper.ToSelectionPoint(pos), Coordinates);
         if (_windowTargetController.PressedTarget is { } target)
         {
             controller.SetSelection(target.Bounds);
@@ -345,7 +361,7 @@ public sealed class OverlayWindow : Window
         }
 
         _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: false);
-        controller.BeginCreate(ToSelectionPoint(pos));
+        controller.BeginCreate(SelectionPointMapper.ToSelectionPoint(pos));
         SyncSelectionFromController();
         _selectionBorder.Visibility = Visibility.Visible;
         _rootGrid.CapturePointer(e.Pointer);
@@ -361,7 +377,7 @@ public sealed class OverlayWindow : Window
         if (_selectionController is not { } controller) return;
         if (controller.IsInteracting)
         {
-            controller.Update(ToSelectionPoint(pos));
+            controller.Update(SelectionPointMapper.ToSelectionPoint(pos));
             SyncSelectionFromController();
             if (controller.Interaction == SelectionInteraction.Create && !_selection.IsEmpty)
                 _sizeLabel.Visibility = Visibility.Visible;
@@ -442,7 +458,7 @@ public sealed class OverlayWindow : Window
 
     private void PreviewWindowAt(Point point, SelectionController controller)
     {
-        var target = _windowTargetController.PreviewAt(ToSelectionPoint(point), Coordinates);
+        var target = _windowTargetController.PreviewAt(SelectionPointMapper.ToSelectionPoint(point), Coordinates);
         ApplyWindowPreview(target, controller);
     }
 
@@ -475,7 +491,7 @@ public sealed class OverlayWindow : Window
         if (_isConfirmed || _selectionController is not { IsInteracting: false } controller)
             return false;
         if (!_windowTargetController.TryCycle(
-                ToSelectionPoint(_lastPointerPosition),
+                SelectionPointMapper.ToSelectionPoint(_lastPointerPosition),
                 direction,
                 Coordinates,
                 out var target))
@@ -513,42 +529,6 @@ public sealed class OverlayWindow : Window
         _initialFrame.Visibility = Visibility.Collapsed;
         _selectionBorder.Visibility = Visibility.Collapsed;
         _visualUpdater.UpdateDim();
-    }
-
-    private void ConfirmSelection(string actionId)
-    {
-        if (_snapshotIdentity is not { } snapshotIdentity)
-            throw new InvalidOperationException("覆盖窗口尚未绑定显示器快照。");
-
-        // 框选坐标是覆盖层内部坐标，换算成冻结画面的物理像素。
-        var coordinates = Coordinates;
-        var crop = coordinates.ToCropRect(new SelectionRect(
-            _selection.X,
-            _selection.Y,
-            _selection.Width,
-            _selection.Height));
-
-        var decision = new CaptureDecision(
-            actionId,
-            new CaptureSelection
-            {
-                Display = snapshotIdentity,
-                X = crop.X,
-                Y = crop.Y,
-                Width = crop.Width,
-                Height = crop.Height,
-                Layers = _annotation.ExportLayers(
-                    new LRect(0, 0, _selection.Width, _selection.Height),
-                    coordinates.ScaleX,
-                    coordinates.ScaleY)
-            },
-            FindTargetWindowHandle());
-
-        // Release the full-screen overlay before any potentially expensive action runs.
-        var handler = CaptureRequested;
-        if (CloseOnCapture)
-            Dismiss();
-        handler?.Invoke(decision);
     }
 
     private void OnAnnotationStateChanged(object? sender, EventArgs args)
@@ -618,93 +598,16 @@ public sealed class OverlayWindow : Window
         }
     }
 
-    private void PerformToolbarCommand(string commandID)
-    {
-        switch (commandID)
-        {
-            case ToolbarCommandIds.Pin:
-            case ToolbarCommandIds.Copy:
-            case ToolbarCommandIds.Complete:
-            case ToolbarCommandIds.HighResolution4K:
-                ConfirmSelection(commandID);
-                break;
-            case ToolbarCommandIds.Cancel:
-                RequestCancel();
-                break;
-        }
-    }
-
-    // MARK: - 视觉更新
-
-    private bool IsToolbarCommandEnabled(string commandId) =>
-        commandId != ToolbarCommandIds.HighResolution4K
-        || FindTargetWindowHandle() != nint.Zero;
-
-    private nint FindTargetWindowHandle()
-    {
-        if (_selection.IsEmpty)
-            return nint.Zero;
-        return _windowTargetController.ResolveCaptureHandle(
-            new SelectionRect(
-                _selection.X,
-                _selection.Y,
-                _selection.Width,
-                _selection.Height),
-            Coordinates);
-    }
-
     private Point ClampPointToCanvas(Point point)
         => new(
             Math.Clamp(point.X, 0, Math.Max(0, FrozenLogicalWidth)),
             Math.Clamp(point.Y, 0, Math.Max(0, FrozenLogicalHeight)));
-
-    private static SelectionPoint ToSelectionPoint(Point point) => new(point.X, point.Y);
-
-    private static SelectionResizeHandle ToSelectionHandle(ResizeHandle handle) => handle switch
-    {
-        ResizeHandle.TopLeft => SelectionResizeHandle.TopLeft,
-        ResizeHandle.Top => SelectionResizeHandle.Top,
-        ResizeHandle.TopRight => SelectionResizeHandle.TopRight,
-        ResizeHandle.Right => SelectionResizeHandle.Right,
-        ResizeHandle.BottomRight => SelectionResizeHandle.BottomRight,
-        ResizeHandle.Bottom => SelectionResizeHandle.Bottom,
-        ResizeHandle.BottomLeft => SelectionResizeHandle.BottomLeft,
-        ResizeHandle.Left => SelectionResizeHandle.Left,
-        _ => throw new ArgumentOutOfRangeException(nameof(handle), handle, null)
-    };
 
     private void SyncSelectionFromController()
     {
         _selection = _selectionController?.Selection is { } selection
             ? new Rect(selection.X, selection.Y, selection.Width, selection.Height)
             : new Rect(0, 0, 0, 0);
-    }
-
-    // MARK: - 键盘
-
-    private bool ApplyPreviousSelection()
-    {
-        if (_previousSelection is not { } previous
-            || _snapshotIdentity is not { } identity
-            || !string.Equals(previous.Display.DisplayId, identity.DisplayId, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var coordinates = Coordinates;
-        var logical = coordinates.PixelToLogical(new SelectionRect(
-            previous.X, previous.Y, previous.Width, previous.Height));
-
-        if (logical.Width < MinSelectionSize || logical.Height < MinSelectionSize)
-            return false;
-
-        if (_selectionController is not { } controller)
-            return false;
-
-        controller.SetSelection(logical);
-        SyncSelectionFromController();
-        _windowTargetController.ClearCaptureTarget();
-        _windowTargetController.ClearPressedTarget();
-        EnterConfirmedState();
-        return true;
     }
 
     private void RequestCancel()
