@@ -61,6 +61,7 @@ public sealed class OverlayWindow : Window
     private readonly OverlayVisualUpdater _visualUpdater;
     private readonly OverlayKeyboardHandler _keyboardHandler;
     private readonly OverlayCaptureCommand _captureCommand;
+    private readonly OverlaySelectionInteraction _selectionInteraction;
     private bool _toolbarRefreshQueued;
     private byte[] _frozenPng = [];
 
@@ -202,12 +203,34 @@ public sealed class OverlayWindow : Window
             () => Coordinates,
             () => _windowTargetController.CandidateCount);
 
+        _selectionInteraction = new OverlaySelectionInteraction(
+            _rootGrid,
+            _initialFrame,
+            _selectionBorder,
+            _handlesCanvas,
+            _sizeLabel,
+            _toolbar,
+            _annotationCanvas,
+            _ocrController,
+            _visualUpdater,
+            _windowTargetController,
+            () => _isConfirmed,
+            value => _isConfirmed = value,
+            () => _lastPointerPosition,
+            value => _lastPointerPosition = value,
+            () => _selectionController,
+            () => Coordinates,
+            () => _selection,
+            ClampPointToCanvas,
+            SyncSelectionFromController,
+            () => InteractionActivated?.Invoke(this));
+
         _keyboardHandler = new OverlayKeyboardHandler(
             _ocrController,
             () => _isConfirmed,
             () => _lastPointerPosition,
             () => Coordinates,
-            direction => CycleWindowTarget(direction),
+            direction => _selectionInteraction.CycleWindowTarget(direction),
             (point, coords) => _windowTargetController.HasTargetAt(point, coords),
             RequestCancel,
             _captureCommand.ConfirmSelection,
@@ -215,10 +238,10 @@ public sealed class OverlayWindow : Window
 
         // 事件
         _windowTargetController.PixelEdgeDetectionRequested += () => PixelEdgeDetectionRequested?.Invoke(this);
-        _rootGrid.PointerPressed += OnPointerPressed;
-        _rootGrid.PointerMoved += OnPointerMoved;
-        _rootGrid.PointerReleased += OnPointerReleased;
-        _rootGrid.PointerWheelChanged += OnPointerWheelChanged;
+        _rootGrid.PointerPressed += _selectionInteraction.OnPointerPressed;
+        _rootGrid.PointerMoved += _selectionInteraction.OnPointerMoved;
+        _rootGrid.PointerReleased += _selectionInteraction.OnPointerReleased;
+        _rootGrid.PointerWheelChanged += _selectionInteraction.OnPointerWheelChanged;
         _rootGrid.KeyDown += _keyboardHandler.OnKeyDown;
         Closed += OnClosed;
     }
@@ -267,7 +290,7 @@ public sealed class OverlayWindow : Window
             _snapshotIdentity.Value);
         _lastPointerPosition = default;
         _selection = default;
-        HideEditUI();
+        _selectionInteraction.HideEditUI();
         _initialFrame.Visibility = Visibility.Visible;
         _visualUpdater.UpdateDim();
 
@@ -306,230 +329,17 @@ public sealed class OverlayWindow : Window
     // MARK: - 指针事件
 
     public void SetPixelEdgeDetector(FrozenPixelEdgeDetector? pixelEdgeDetector)
-    {
-        _windowTargetController.SetPixelEdgeDetector(pixelEdgeDetector);
-        if (pixelEdgeDetector is not null
-            && !_isConfirmed
-            && _selectionController is { IsInteracting: false } controller)
-        {
-            PreviewWindowAt(_lastPointerPosition, controller);
-        }
-    }
-
-    private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        if (!e.GetCurrentPoint(_rootGrid).Properties.IsLeftButtonPressed) return;
-        if (_ocrController.IsActive)
-            _ocrController.Deactivate();
-        RequestPixelEdgeDetection();
-        InteractionActivated?.Invoke(this);
-        var pos = ClampPointToCanvas(e.GetCurrentPoint(_rootGrid).Position);
-        _lastPointerPosition = pos;
-        var controller = _selectionController;
-        if (controller is null) return;
-        _initialFrame.Visibility = Visibility.Collapsed;
-
-        if (_isConfirmed)
-        {
-            var handle = _visualUpdater.HitTestHandle(pos);
-            if (handle.HasValue)
-            {
-                controller.BeginResize(SelectionPointMapper.ToSelectionHandle(handle.Value), SelectionPointMapper.ToSelectionPoint(pos));
-                _rootGrid.CapturePointer(e.Pointer);
-                return;
-            }
-            if (_selection.Contains(pos))
-            {
-                controller.BeginMove(SelectionPointMapper.ToSelectionPoint(pos));
-                _rootGrid.CapturePointer(e.Pointer);
-                return;
-            }
-
-            _isConfirmed = false;
-            controller.SetSelection(null);
-            _windowTargetController.ClearCaptureTarget();
-            SyncSelectionFromController();
-            HideEditUI();
-        }
-
-        _windowTargetController.ClearCaptureTarget();
-        _windowTargetController.FindPressedTarget(SelectionPointMapper.ToSelectionPoint(pos), Coordinates);
-        if (_windowTargetController.PressedTarget is { } target)
-        {
-            controller.SetSelection(target.Bounds);
-            SyncSelectionFromController();
-        }
-
-        _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: false);
-        controller.BeginCreate(SelectionPointMapper.ToSelectionPoint(pos));
-        SyncSelectionFromController();
-        _selectionBorder.Visibility = Visibility.Visible;
-        _rootGrid.CapturePointer(e.Pointer);
-        _visualUpdater.UpdateDim();
-    }
-
-    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
-    {
-        RequestPixelEdgeDetection();
-
-        var pos = ClampPointToCanvas(e.GetCurrentPoint(_rootGrid).Position);
-        _lastPointerPosition = pos;
-        if (_selectionController is not { } controller) return;
-        if (controller.IsInteracting)
-        {
-            controller.Update(SelectionPointMapper.ToSelectionPoint(pos));
-            SyncSelectionFromController();
-            if (controller.Interaction == SelectionInteraction.Create && !_selection.IsEmpty)
-                _sizeLabel.Visibility = Visibility.Visible;
-            _visualUpdater.UpdateSelectionVisual();
-            return;
-        }
-
-        if (!_isConfirmed)
-            PreviewWindowAt(pos, controller);
-    }
-
-    private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
-    {
-        _rootGrid.ReleasePointerCapture(e.Pointer);
-        if (_selectionController is not { IsInteracting: true } controller) return;
-        var interaction = controller.Interaction;
-        bool committed = controller.End();
-        SyncSelectionFromController();
-
-        if (interaction == SelectionInteraction.Create)
-        {
-            if (committed)
-            {
-                // A drag creates a free-form region. The window under the initial press is not an
-                // explicit target; resolve the completed selection instead.
-                _windowTargetController.ClearCaptureTarget();
-                _windowTargetController.ClearPressedTarget();
-                EnterConfirmedState();
-            }
-            else if (_windowTargetController.PressedTarget is { } target)
-            {
-                controller.SetSelection(target.Bounds);
-                SyncSelectionFromController();
-                _windowTargetController.SetCaptureTarget(target);
-                _windowTargetController.ClearPressedTarget();
-                EnterConfirmedState();
-            }
-            else
-            {
-                _windowTargetController.ClearPressedTarget();
-                _windowTargetController.ClearCaptureTarget();
-                _isConfirmed = false;
-                _selectionBorder.Visibility = Visibility.Collapsed;
-                _sizeLabel.Visibility = Visibility.Collapsed;
-                _initialFrame.Visibility = Visibility.Visible;
-                _visualUpdater.UpdateDim();
-            }
-            return;
-        }
-
-        _isConfirmed = true;
-        _visualUpdater.UpdateSelectionVisual();
-    }
-
-    // MARK: - 状态转换
+        => _selectionInteraction.SetPixelEdgeDetector(pixelEdgeDetector);
 
     private void EnterConfirmedState()
-    {
-        _isConfirmed = true;
-        _windowTargetController.Reset();
-        _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: false);
-        _handlesCanvas.Visibility = Visibility.Visible;
-        _sizeLabel.Visibility = Visibility.Visible;
-        _toolbar.Visibility = Visibility.Visible;
-        _annotationCanvas.Visibility = Visibility.Visible;
-        _visualUpdater.UpdateSelectionVisual();
-        _rootGrid.Focus(FocusState.Pointer);
-    }
-
-    private void HideEditUI()
-    {
-        _ocrController.Deactivate();
-        _handlesCanvas.Visibility = Visibility.Collapsed;
-        _sizeLabel.Visibility = Visibility.Collapsed;
-        _toolbar.Visibility = Visibility.Collapsed;
-        _annotationCanvas.Visibility = Visibility.Collapsed;
-    }
-
-    private void PreviewWindowAt(Point point, SelectionController controller)
-    {
-        var target = _windowTargetController.PreviewAt(SelectionPointMapper.ToSelectionPoint(point), Coordinates);
-        ApplyWindowPreview(target, controller);
-    }
-
-    private void ApplyWindowPreview(
-        WindowSelectionTarget? target,
-        SelectionController controller)
-    {
-        controller.SetSelection(target?.Bounds);
-        SyncSelectionFromController();
-
-        bool found = target is not null;
-        _initialFrame.Visibility = found ? Visibility.Collapsed : Visibility.Visible;
-        _selectionBorder.Visibility = found ? Visibility.Visible : Visibility.Collapsed;
-        if (found)
-        {
-            HideEditUI();
-            _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: true);
-            _sizeLabel.Visibility = Visibility.Visible;
-            _visualUpdater.UpdateSelectionVisual();
-        }
-        else
-        {
-            _sizeLabel.Visibility = Visibility.Collapsed;
-            _visualUpdater.UpdateDim();
-        }
-    }
-
-    private bool CycleWindowTarget(int direction)
-    {
-        if (_isConfirmed || _selectionController is not { IsInteracting: false } controller)
-            return false;
-        if (!_windowTargetController.TryCycle(
-                SelectionPointMapper.ToSelectionPoint(_lastPointerPosition),
-                direction,
-                Coordinates,
-                out var target))
-            return false;
-
-        ApplyWindowPreview(target, controller);
-        return true;
-    }
-
-    private void OnPointerWheelChanged(object sender, PointerRoutedEventArgs e)
-    {
-        RequestPixelEdgeDetection();
-        if (_isConfirmed || _selectionController?.IsInteracting != false) return;
-        var point = e.GetCurrentPoint(_rootGrid);
-        _lastPointerPosition = ClampPointToCanvas(point.Position);
-        int direction = point.Properties.MouseWheelDelta < 0 ? 1 : -1;
-        if (CycleWindowTarget(direction))
-            e.Handled = true;
-    }
+        => _selectionInteraction.EnterConfirmedState();
 
     private void RequestPixelEdgeDetection()
         => _windowTargetController.RequestPixelEdgeDetection();
 
     /// <summary>另一块屏开始交互时，清除此屏尚未提交的选区与标注。</summary>
     public void SetSessionInactive()
-    {
-        _ocrController.Deactivate();
-        _selectionController?.Cancel();
-        _selectionController?.SetSelection(null);
-        _annotation.Clear();
-        SyncSelectionFromController();
-        _isConfirmed = false;
-        _windowTargetController.Reset();
-        HideEditUI();
-        _initialFrame.Visibility = Visibility.Collapsed;
-        _selectionBorder.Visibility = Visibility.Collapsed;
-        _visualUpdater.UpdateDim();
-    }
+        => _selectionInteraction.SetSessionInactive(_annotation);
 
     private void OnAnnotationStateChanged(object? sender, EventArgs args)
     {
