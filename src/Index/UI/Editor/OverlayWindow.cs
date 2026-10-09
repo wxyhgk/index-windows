@@ -32,7 +32,6 @@ public sealed class OverlayWindow : Window
     private readonly IAppDiagnostics _diagnostics;
     private readonly IOcrTextRecognizer _ocrTextRecognizer;
     private readonly IClipboardWriter _clipboardWriter;
-    private const double HandleHitRadius = 12;
     private const double MinSelectionSize = 5;
 
     // Selection geometry and rollback live in the platform-independent controller.
@@ -61,6 +60,7 @@ public sealed class OverlayWindow : Window
     private readonly Border _sizeLabel;
     private readonly TextBlock _sizeLabelText;
     private readonly OverlayOcrController _ocrController;
+    private readonly OverlayVisualUpdater _visualUpdater;
     private bool _toolbarRefreshQueued;
     private bool _pixelEdgeDetectionRequested;
     private byte[] _frozenPng = [];
@@ -166,6 +166,28 @@ public sealed class OverlayWindow : Window
             capabilities,
             isActionEnabled: IsToolbarCommandEnabled);
 
+        _visualUpdater = new OverlayVisualUpdater(
+            _selectionBorder,
+            _dimTop,
+            _dimBottom,
+            _dimLeft,
+            _dimRight,
+            _handles,
+            _sizeLabel,
+            _sizeLabelText,
+            _toolbar,
+            _annotationCanvas,
+            _toolbarRegistry,
+            _toolbarContext,
+            _ocrController,
+            _annotation,
+            () => _selection,
+            () => _isConfirmed,
+            () => FrozenLogicalWidth,
+            () => FrozenLogicalHeight,
+            () => Coordinates,
+            () => _windowTargetNavigator?.CandidateCount ?? 0);
+
         // 事件
         _rootGrid.PointerPressed += OnPointerPressed;
         _rootGrid.PointerMoved += OnPointerMoved;
@@ -224,7 +246,7 @@ public sealed class OverlayWindow : Window
         _selection = default;
         HideEditUI();
         _initialFrame.Visibility = Visibility.Visible;
-        UpdateDim();
+        _visualUpdater.UpdateDim();
 
         Activate();
 
@@ -286,7 +308,7 @@ public sealed class OverlayWindow : Window
 
         if (_isConfirmed)
         {
-            var handle = HitTestHandle(pos);
+            var handle = _visualUpdater.HitTestHandle(pos);
             if (handle.HasValue)
             {
                 controller.BeginResize(ToSelectionHandle(handle.Value), ToSelectionPoint(pos));
@@ -319,12 +341,12 @@ public sealed class OverlayWindow : Window
             SyncSelectionFromController();
         }
 
-        ApplySelectionBorderStyle(isWindowPreview: false);
+        _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: false);
         controller.BeginCreate(ToSelectionPoint(pos));
         SyncSelectionFromController();
         _selectionBorder.Visibility = Visibility.Visible;
         _rootGrid.CapturePointer(e.Pointer);
-        UpdateDim();
+        _visualUpdater.UpdateDim();
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
@@ -340,7 +362,7 @@ public sealed class OverlayWindow : Window
             SyncSelectionFromController();
             if (controller.Interaction == SelectionInteraction.Create && !_selection.IsEmpty)
                 _sizeLabel.Visibility = Visibility.Visible;
-            UpdateSelectionVisual();
+            _visualUpdater.UpdateSelectionVisual();
             return;
         }
 
@@ -382,13 +404,13 @@ public sealed class OverlayWindow : Window
                 _selectionBorder.Visibility = Visibility.Collapsed;
                 _sizeLabel.Visibility = Visibility.Collapsed;
                 _initialFrame.Visibility = Visibility.Visible;
-                UpdateDim();
+                _visualUpdater.UpdateDim();
             }
             return;
         }
 
         _isConfirmed = true;
-        UpdateSelectionVisual();
+        _visualUpdater.UpdateSelectionVisual();
     }
 
     // MARK: - 状态转换
@@ -397,12 +419,12 @@ public sealed class OverlayWindow : Window
     {
         _isConfirmed = true;
         _windowTargetNavigator?.Reset();
-        ApplySelectionBorderStyle(isWindowPreview: false);
+        _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: false);
         _handlesCanvas.Visibility = Visibility.Visible;
         _sizeLabel.Visibility = Visibility.Visible;
         _toolbar.Visibility = Visibility.Visible;
         _annotationCanvas.Visibility = Visibility.Visible;
-        UpdateSelectionVisual();
+        _visualUpdater.UpdateSelectionVisual();
         _rootGrid.Focus(FocusState.Pointer);
     }
 
@@ -434,14 +456,14 @@ public sealed class OverlayWindow : Window
         if (found)
         {
             HideEditUI();
-            ApplySelectionBorderStyle(isWindowPreview: true);
+            _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: true);
             _sizeLabel.Visibility = Visibility.Visible;
-            UpdateSelectionVisual();
+            _visualUpdater.UpdateSelectionVisual();
         }
         else
         {
             _sizeLabel.Visibility = Visibility.Collapsed;
-            UpdateDim();
+            _visualUpdater.UpdateDim();
         }
     }
 
@@ -495,7 +517,7 @@ public sealed class OverlayWindow : Window
         HideEditUI();
         _initialFrame.Visibility = Visibility.Collapsed;
         _selectionBorder.Visibility = Visibility.Collapsed;
-        UpdateDim();
+        _visualUpdater.UpdateDim();
     }
 
     private void ConfirmSelection(string actionId)
@@ -549,7 +571,7 @@ public sealed class OverlayWindow : Window
         {
             _toolbarRefreshQueued = false;
             if (!_hasClosed)
-                UpdateToolbarPosition();
+                _visualUpdater.UpdateToolbarPosition();
         }))
         {
             _toolbarRefreshQueued = false;
@@ -619,30 +641,6 @@ public sealed class OverlayWindow : Window
 
     // MARK: - 视觉更新
 
-    private void UpdateSelectionVisual()
-    {
-        _selectionBorder.Visibility = Visibility.Visible;
-        Canvas.SetLeft(_selectionBorder, _selection.X);
-        Canvas.SetTop(_selectionBorder, _selection.Y);
-        _selectionBorder.Width = _selection.Width;
-        _selectionBorder.Height = _selection.Height;
-
-        Canvas.SetLeft(_annotationCanvas, _selection.X);
-        Canvas.SetTop(_annotationCanvas, _selection.Y);
-        _annotationCanvas.Width = _selection.Width;
-        _annotationCanvas.Height = _selection.Height;
-        _annotationCanvas.Clip = new RectangleGeometry
-        {
-            Rect = new Rect(0, 0, _selection.Width, _selection.Height)
-        };
-        _ocrController.PositionOverlay(_selection);
-
-        UpdateDim();
-        UpdateHandles();
-        UpdateSizeLabel();
-        UpdateToolbarPosition();
-    }
-
     private bool IsToolbarCommandEnabled(string commandId) =>
         commandId != ToolbarCommandIds.HighResolution4K
         || FindTargetWindowHandle() != nint.Zero;
@@ -660,58 +658,6 @@ public sealed class OverlayWindow : Window
                 _selection.Height),
             Coordinates);
     }
-
-    private void ApplySelectionBorderStyle(bool isWindowPreview)
-    {
-        _selectionBorder.Stroke = new SolidColorBrush(isWindowPreview
-            ? Windows.UI.Color.FromArgb(0xFF, 0x36, 0x92, 0xFF)
-            : Colors.White);
-        _selectionBorder.StrokeThickness = isWindowPreview ? 2.25 : 1.75;
-    }
-
-    private void UpdateDim()
-    {
-        double w = FrozenLogicalWidth;
-        double h = FrozenLogicalHeight;
-
-        if (_selection.IsEmpty)
-        {
-            _dimTop.Width = w; _dimTop.Height = h;
-            Canvas.SetLeft(_dimTop, 0); Canvas.SetTop(_dimTop, 0);
-            _dimBottom.Width = 0; _dimBottom.Height = 0;
-            _dimLeft.Width = 0; _dimLeft.Height = 0;
-            _dimRight.Width = 0; _dimRight.Height = 0;
-            return;
-        }
-
-        var constrained = new LRect(
-            _selection.X,
-            _selection.Y,
-            _selection.Width,
-            _selection.Height)
-            .IntersectedWithBounds(w, h);
-        double sx = constrained.X, sy = constrained.Y;
-        double sw = constrained.W, sh = constrained.H;
-        // 上：从窗口顶到选区顶
-        _dimTop.Width = w; _dimTop.Height = sy;
-        Canvas.SetLeft(_dimTop, 0); Canvas.SetTop(_dimTop, 0);
-        // 下：从选区底到窗口底
-        _dimBottom.Width = w; _dimBottom.Height = Math.Max(0, h - sy - sh);
-        Canvas.SetLeft(_dimBottom, 0); Canvas.SetTop(_dimBottom, sy + sh);
-        // 左：从窗口左到选区左
-        _dimLeft.Width = sx; _dimLeft.Height = sh;
-        Canvas.SetLeft(_dimLeft, 0); Canvas.SetTop(_dimLeft, sy);
-        // 右：从选区右到窗口右
-        _dimRight.Width = Math.Max(0, w - sx - sw); _dimRight.Height = sh;
-        Canvas.SetLeft(_dimRight, sx + sw); Canvas.SetTop(_dimRight, sy);
-    }
-
-    private static readonly ResizeHandle[] HandleOrder =
-    {
-        ResizeHandle.TopLeft, ResizeHandle.Top, ResizeHandle.TopRight,
-        ResizeHandle.Right, ResizeHandle.BottomRight,
-        ResizeHandle.Bottom, ResizeHandle.BottomLeft, ResizeHandle.Left
-    };
 
     private Point ClampPointToCanvas(Point point)
         => new(
@@ -738,74 +684,6 @@ public sealed class OverlayWindow : Window
         _selection = _selectionController?.Selection is { } selection
             ? new Rect(selection.X, selection.Y, selection.Width, selection.Height)
             : new Rect(0, 0, 0, 0);
-    }
-
-    private void UpdateHandles()
-    {
-        if (!_isConfirmed)
-        {
-            foreach (var h in _handles) h.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        var lRect = new LRect(_selection.X, _selection.Y, _selection.Width, _selection.Height);
-        for (int i = 0; i < 8; i++)
-        {
-            var pos = HandleOrder[i].PointIn(lRect);
-            _handles[i].Visibility = Visibility.Visible;
-            Canvas.SetLeft(_handles[i], pos.X - OverlayVisualTree.HandleSize / 2);
-            Canvas.SetTop(_handles[i], pos.Y - OverlayVisualTree.HandleSize / 2);
-        }
-    }
-
-    private void UpdateSizeLabel()
-    {
-        if (_selection.IsEmpty) return;
-        var pixelSize = Coordinates.ToDisplaySize(new SelectionRect(
-            _selection.X,
-            _selection.Y,
-            _selection.Width,
-            _selection.Height));
-        string cycleHint = !_isConfirmed && _windowTargetNavigator?.CandidateCount > 1
-            ? "  ·  Tab 切换"
-            : "";
-        _sizeLabelText.Text = $"{pixelSize.Width} × {pixelSize.Height}{cycleHint}";
-        // 尺寸贴选区左上角，避免与下方工具栏争位置。
-        double labelY = _selection.Y >= 36 ? _selection.Y - 28 : _selection.Y + 8;
-        double labelX = Math.Clamp(_selection.X, 4, Math.Max(4, FrozenLogicalWidth - 170));
-        Canvas.SetLeft(_sizeLabel, labelX);
-        Canvas.SetTop(_sizeLabel, labelY);
-    }
-
-    private void UpdateToolbarPosition()
-    {
-        if (_selection.IsEmpty || !_isConfirmed) return;
-        double canvasW = FrozenLogicalWidth;
-        double canvasH = FrozenLogicalHeight;
-        var layout = _toolbar.Update(
-            _toolbarRegistry,
-            _toolbarContext,
-            new ToolbarRect(0, 0, canvasW, canvasH),
-            new ToolbarRect(_selection.X, _selection.Y, _selection.Width, _selection.Height));
-
-        Canvas.SetLeft(_toolbar, layout.X);
-        Canvas.SetTop(_toolbar, layout.Y);
-    }
-
-    // MARK: - 命中测试
-
-    private ResizeHandle? HitTestHandle(Point pos)
-    {
-        var lRect = new LRect(_selection.X, _selection.Y, _selection.Width, _selection.Height);
-        foreach (var handle in HandleOrder)
-        {
-            var hPos = handle.PointIn(lRect);
-            double dx = pos.X - hPos.X;
-            double dy = pos.Y - hPos.Y;
-            if (Math.Sqrt(dx * dx + dy * dy) <= HandleHitRadius)
-                return handle;
-        }
-        return null;
     }
 
     // MARK: - 键盘
