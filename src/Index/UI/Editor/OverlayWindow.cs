@@ -60,14 +60,10 @@ public sealed class OverlayWindow : Window
     private readonly OcrTextOverlayView _liveTextOverlay;
     private readonly Border _sizeLabel;
     private readonly TextBlock _sizeLabelText;
+    private readonly OverlayOcrController _ocrController;
     private bool _toolbarRefreshQueued;
     private bool _pixelEdgeDetectionRequested;
     private byte[] _frozenPng = [];
-    private CancellationTokenSource? _ocrCancellation;
-    private int _ocrGeneration;
-    private bool _isOcrModeActive;
-    private bool _isOcrLoading;
-    private bool _copyAllWhenOcrCompletes;
 
     // 选区（覆盖层局部坐标）
     private Rect _selection;
@@ -116,22 +112,6 @@ public sealed class OverlayWindow : Window
         BuiltinToolbarControls.RegisterCaptureDefaults(_toolbarRegistry);
         AnnotationToolbarControls.RegisterCaptureAnnotationDefaults(_toolbarRegistry);
         AnnotationStyleToolbarControls.RegisterCaptureStyleDefaults(_toolbarRegistry);
-        var capabilities = _ocrTextRecognizer.IsAvailable
-            ? new ToolbarHostCapabilities(
-                new Dictionary<ToolbarHostMode, ToolbarHostModeCapability>
-                {
-                    [ToolbarHostMode.LiveText] = new(
-                        () => _isOcrModeActive,
-                        ActivateLiveText,
-                        DeactivateLiveText)
-                })
-            : ToolbarHostCapabilities.None;
-        _toolbarContext = new ToolbarContext(
-            _annotation,
-            ToolbarScope.Capture,
-            PerformToolbarCommand,
-            capabilities,
-            isActionEnabled: IsToolbarCommandEnabled);
 
         var visuals = new OverlayVisualTree(_annotation);
         _rootGrid = visuals.Root;
@@ -149,9 +129,42 @@ public sealed class OverlayWindow : Window
         _toolbar = visuals.Toolbar;
         _annotationCanvas = visuals.AnnotationCanvas;
         _liveTextOverlay = visuals.LiveTextOverlay;
-        _liveTextOverlay.SelectionChanged += OnLiveTextSelectionChanged;
         _annotationCanvas.StateChanged += OnAnnotationStateChanged;
         Content = _rootGrid;
+
+        _ocrController = new OverlayOcrController(
+            _ocrTextRecognizer,
+            _clipboardWriter,
+            _diagnostics,
+            _liveTextOverlay,
+            _annotationCanvas,
+            _sizeLabel,
+            _sizeLabelText,
+            _annotation,
+            QueueToolbarRefresh,
+            () => _rootGrid.DispatcherQueue,
+            () => _hasClosed,
+            () => _selection,
+            () => _frozenPng,
+            () => Coordinates,
+            () => _displayDpiScale);
+
+        var capabilities = _ocrTextRecognizer.IsAvailable
+            ? new ToolbarHostCapabilities(
+                new Dictionary<ToolbarHostMode, ToolbarHostModeCapability>
+                {
+                    [ToolbarHostMode.LiveText] = new(
+                        () => _ocrController.IsActive,
+                        _ocrController.Activate,
+                        _ocrController.Deactivate)
+                })
+            : ToolbarHostCapabilities.None;
+        _toolbarContext = new ToolbarContext(
+            _annotation,
+            ToolbarScope.Capture,
+            PerformToolbarCommand,
+            capabilities,
+            isActionEnabled: IsToolbarCommandEnabled);
 
         // 事件
         _rootGrid.PointerPressed += OnPointerPressed;
@@ -261,8 +274,8 @@ public sealed class OverlayWindow : Window
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (!e.GetCurrentPoint(_rootGrid).Properties.IsLeftButtonPressed) return;
-        if (_isOcrModeActive)
-            DeactivateLiveText();
+        if (_ocrController.IsActive)
+            _ocrController.Deactivate();
         RequestPixelEdgeDetection();
         InteractionActivated?.Invoke(this);
         var pos = ClampPointToCanvas(e.GetCurrentPoint(_rootGrid).Position);
@@ -395,7 +408,7 @@ public sealed class OverlayWindow : Window
 
     private void HideEditUI()
     {
-        DeactivateLiveText();
+        _ocrController.Deactivate();
         _handlesCanvas.Visibility = Visibility.Collapsed;
         _sizeLabel.Visibility = Visibility.Collapsed;
         _toolbar.Visibility = Visibility.Collapsed;
@@ -468,267 +481,10 @@ public sealed class OverlayWindow : Window
         PixelEdgeDetectionRequested?.Invoke(this);
     }
 
-    private void ActivateLiveText()
-    {
-        if (_isOcrModeActive || _selection.IsEmpty || _frozenPng.Length == 0)
-            return;
-
-        _isOcrModeActive = true;
-        _isOcrLoading = true;
-        int generation = ++_ocrGeneration;
-        var cancellation = new CancellationTokenSource();
-        var previous = Interlocked.Exchange(ref _ocrCancellation, cancellation);
-        previous?.Cancel();
-        previous?.Dispose();
-
-        _liveTextOverlay.Clear();
-        _annotationCanvas.IsHitTestVisible = false;
-        _sizeLabelText.Text = "正在识别文字…";
-        _sizeLabel.Visibility = Visibility.Visible;
-
-        var crop = Coordinates.ToCropRect(new SelectionRect(
-            _selection.X,
-            _selection.Y,
-            _selection.Width,
-            _selection.Height));
-        WriteOcrDiagnostic(
-            AppDiagnosticLevel.Trace,
-            "recognition-started",
-            new Dictionary<string, string?>
-            {
-                ["crop"] = $"{crop.X},{crop.Y},{crop.Width}x{crop.Height}",
-                ["dpiScale"] = _displayDpiScale.ToString(
-                    "F3",
-                    System.Globalization.CultureInfo.InvariantCulture)
-            });
-        _ = RecognizeLiveTextAsync(
-            generation,
-            cancellation,
-            new OcrPixelRect(crop.X, crop.Y, crop.Width, crop.Height));
-        QueueToolbarRefresh();
-    }
-
-    private void DeactivateLiveText()
-    {
-        if (!_isOcrModeActive && !_isOcrLoading && _ocrCancellation is null)
-            return;
-
-        _isOcrModeActive = false;
-        _isOcrLoading = false;
-        _copyAllWhenOcrCompletes = false;
-        _ocrGeneration++;
-        var cancellation = Interlocked.Exchange(ref _ocrCancellation, null);
-        if (cancellation is not null)
-        {
-            try
-            {
-                cancellation.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-            cancellation.Dispose();
-        }
-        _liveTextOverlay.Clear();
-        _annotationCanvas.IsHitTestVisible = !_isOcrModeActive
-            && (_annotation.Tool.HasValue || !_annotation.IsEmpty);
-        UpdateSizeLabel();
-        QueueToolbarRefresh();
-    }
-
-    private async Task RecognizeLiveTextAsync(
-        int generation,
-        CancellationTokenSource cancellation,
-        OcrPixelRect crop)
-    {
-        try
-        {
-            var result = await _ocrTextRecognizer
-                .RecognizeAsync(_frozenPng, crop, cancellation.Token)
-                .ConfigureAwait(false);
-            WriteOcrDiagnostic(
-                AppDiagnosticLevel.Trace,
-                "recognition-completed",
-                new Dictionary<string, string?>
-                {
-                    ["wordCount"] = result.Words.Count.ToString(),
-                    ["dimensions"] = $"{result.PixelWidth}x{result.PixelHeight}",
-                    ["language"] = result.LanguageTag
-                });
-            EnqueueLiveTextCompletion(generation, cancellation, () =>
-            {
-                if (result.Words.Count == 0)
-                {
-                    _sizeLabelText.Text = "没有识别到文字";
-                    return;
-                }
-
-                PositionLiveTextOverlay();
-                _liveTextOverlay.Bind(result, _selection.Width, _selection.Height);
-                if (_copyAllWhenOcrCompletes)
-                {
-                    _copyAllWhenOcrCompletes = false;
-                    _liveTextOverlay.SelectAll();
-                    CopySelectedLiveText();
-                }
-                else
-                {
-                    _sizeLabelText.Text = "拖动选择文字 · Ctrl+C 复制";
-                }
-            });
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            WriteOcrDiagnostic(
-                AppDiagnosticLevel.Error,
-                "recognition-failed",
-                exception: error);
-            EnqueueLiveTextCompletion(generation, cancellation, () =>
-                _sizeLabelText.Text = "文字识别失败");
-        }
-    }
-
-    private void EnqueueLiveTextCompletion(
-        int generation,
-        CancellationTokenSource cancellation,
-        Action update)
-    {
-        void Apply()
-        {
-            if (_hasClosed
-                || !_isOcrLoading
-                || generation != _ocrGeneration
-                || !ReferenceEquals(_ocrCancellation, cancellation)
-                || cancellation.IsCancellationRequested)
-            {
-                ReleaseOcrCancellation(cancellation);
-                return;
-            }
-
-            try
-            {
-                update();
-            }
-            catch (Exception error)
-            {
-                _sizeLabelText.Text = "复制文字失败";
-                WriteOcrDiagnostic(
-                    AppDiagnosticLevel.Error,
-                    "copy-failed",
-                    exception: error);
-            }
-            finally
-            {
-                _isOcrLoading = false;
-                ReleaseOcrCancellation(cancellation);
-            }
-        }
-
-        try
-        {
-            if (_rootGrid.DispatcherQueue.HasThreadAccess)
-                Apply();
-            else if (!_rootGrid.DispatcherQueue.TryEnqueue(Apply))
-                ReleaseOcrCancellation(cancellation);
-        }
-        catch
-        {
-            ReleaseOcrCancellation(cancellation);
-        }
-    }
-
-    private void OnLiveTextSelectionChanged()
-    {
-        if (!_isOcrModeActive || _isOcrLoading)
-            return;
-
-        _sizeLabelText.Text = _liveTextOverlay.HasSelection
-            ? $"已选择 {_liveTextOverlay.SelectedWordCount} 个词 · Ctrl+C 复制"
-            : "拖动选择文字 · Ctrl+C 复制";
-    }
-
-    private void CopySelectedLiveText()
-    {
-        string text = _liveTextOverlay.SelectedText;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            _sizeLabelText.Text = "请先拖动选择文字";
-            return;
-        }
-
-        try
-        {
-            _clipboardWriter.WriteText(text);
-            _sizeLabelText.Text = $"已复制 {_liveTextOverlay.SelectedWordCount} 个词";
-        }
-        catch (Exception error)
-        {
-            _sizeLabelText.Text = "复制文字失败";
-            WriteOcrDiagnostic(
-                AppDiagnosticLevel.Error,
-                "copy-failed",
-                exception: error);
-        }
-    }
-
-    private void ReleaseOcrCancellation(CancellationTokenSource cancellation)
-    {
-        if (ReferenceEquals(
-            Interlocked.CompareExchange(ref _ocrCancellation, null, cancellation),
-            cancellation))
-        {
-            cancellation.Dispose();
-        }
-    }
-
-    private void WriteOcrDiagnostic(
-        AppDiagnosticLevel level,
-        string eventName,
-        IReadOnlyDictionary<string, string?>? properties = null,
-        Exception? exception = null)
-    {
-        try
-        {
-            _diagnostics.Write(
-                level,
-                "capture.ocr",
-                eventName,
-                properties,
-                exception);
-        }
-        catch
-        {
-            // Diagnostics must never change capture/OCR behavior.
-        }
-    }
-
-    private void CopyAllLiveText()
-    {
-        if (!_isOcrModeActive)
-        {
-            _copyAllWhenOcrCompletes = true;
-            ActivateLiveText();
-            return;
-        }
-
-        if (_isOcrLoading)
-        {
-            _copyAllWhenOcrCompletes = true;
-            _sizeLabelText.Text = "正在识别，完成后复制全部文字…";
-            return;
-        }
-
-        _liveTextOverlay.SelectAll();
-        CopySelectedLiveText();
-    }
-
     /// <summary>另一块屏开始交互时，清除此屏尚未提交的选区与标注。</summary>
     public void SetSessionInactive()
     {
-        DeactivateLiveText();
+        _ocrController.Deactivate();
         _selectionController?.Cancel();
         _selectionController?.SetSelection(null);
         _annotation.Clear();
@@ -780,10 +536,7 @@ public sealed class OverlayWindow : Window
 
     private void OnAnnotationStateChanged(object? sender, EventArgs args)
     {
-        if (_annotation.Tool.HasValue && _isOcrModeActive)
-            DeactivateLiveText();
-        _annotationCanvas.IsHitTestVisible = !_isOcrModeActive
-            && (_annotation.Tool.HasValue || !_annotation.IsEmpty);
+        _ocrController.OnAnnotationStateChanged();
         QueueToolbarRefresh();
     }
 
@@ -806,8 +559,7 @@ public sealed class OverlayWindow : Window
     private void OnClosed(object sender, WindowEventArgs args)
     {
         _hasClosed = true;
-        DeactivateLiveText();
-        _liveTextOverlay.SelectionChanged -= OnLiveTextSelectionChanged;
+        _ocrController.OnClosed();
         _annotationCanvas.StateChanged -= OnAnnotationStateChanged;
         _annotationCanvas.Dispose();
         Closed -= OnClosed;
@@ -883,10 +635,7 @@ public sealed class OverlayWindow : Window
         {
             Rect = new Rect(0, 0, _selection.Width, _selection.Height)
         };
-        _annotationCanvas.IsHitTestVisible = !_isOcrModeActive
-            && (_annotation.Tool.HasValue || !_annotation.IsEmpty);
-
-        PositionLiveTextOverlay();
+        _ocrController.PositionOverlay(_selection);
 
         UpdateDim();
         UpdateHandles();
@@ -1028,18 +777,6 @@ public sealed class OverlayWindow : Window
         Canvas.SetTop(_sizeLabel, labelY);
     }
 
-    private void PositionLiveTextOverlay()
-    {
-        Canvas.SetLeft(_liveTextOverlay, _selection.X);
-        Canvas.SetTop(_liveTextOverlay, _selection.Y);
-        _liveTextOverlay.Width = _selection.Width;
-        _liveTextOverlay.Height = _selection.Height;
-        _liveTextOverlay.Clip = new RectangleGeometry
-        {
-            Rect = new Rect(0, 0, _selection.Width, _selection.Height)
-        };
-    }
-
     private void UpdateToolbarPosition()
     {
         if (_selection.IsEmpty || !_isConfirmed) return;
@@ -1083,13 +820,13 @@ public sealed class OverlayWindow : Window
             .HasFlag(CoreVirtualKeyStates.Down);
         switch (e.Key)
         {
-            case VirtualKey.C when controlDown && _isOcrModeActive:
-                CopySelectedLiveText();
+            case VirtualKey.C when controlDown && _ocrController.IsActive:
+                _ocrController.CopySelected();
                 e.Handled = true;
                 break;
 
             case VirtualKey.C when shiftDown && _isConfirmed:
-                CopyAllLiveText();
+                _ocrController.CopyAll();
                 e.Handled = true;
                 break;
 
@@ -1104,10 +841,10 @@ public sealed class OverlayWindow : Window
                 break;
 
             case VirtualKey.Escape:
-                if (_isOcrModeActive && _liveTextOverlay.HasSelection)
-                    _liveTextOverlay.ClearSelection();
-                else if (_isOcrModeActive)
-                    DeactivateLiveText();
+                if (_ocrController.IsActive && _ocrController.HasSelection)
+                    _ocrController.ClearSelection();
+                else if (_ocrController.IsActive)
+                    _ocrController.Deactivate();
                 else
                     RequestCancel();
                 e.Handled = true;
