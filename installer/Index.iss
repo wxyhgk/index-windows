@@ -48,37 +48,24 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "runtime\windowsdesktop-runtime-9.0-win-x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Code]
-function IsDotNet9DesktopInstalled: Boolean;
+procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-begin
-  // .NET installer writes version info to WOW6432Node (32-bit registry view).
-  // {sys} resolves to SysWOW64 in the 32-bit setup.exe, so {sys}\reg.exe
-  // is the 32-bit reg.exe that reads WOW6432Node.
-  Exec(ExpandConstant('{sys}\reg.exe'),
-       'query "HKLM\SOFTWARE\dotnet\setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App"',
-       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Result := (ResultCode = 0);
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
+  RuntimePath: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    if not IsDotNet9DesktopInstalled then
+    RuntimePath := ExpandConstant('{tmp}\windowsdesktop-runtime-9.0-win-x64.exe');
+    if FileExists(RuntimePath) then
     begin
-      MsgBox(
-        'Index requires the .NET 9 Desktop Runtime.' + #13#10 +
-        'Please download and install it from:' + #13#10 +
-        'https://dotnet.microsoft.com/download/dotnet/9.0' + #13#10 +
-        '(select "Desktop Runtime" x64)',
-        mbInformation, MB_OK);
+      Exec(RuntimePath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;
