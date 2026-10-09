@@ -48,27 +48,10 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "runtime\windowsdesktop-runtime-9.0-win-x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-
-[Code]
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-  RuntimePath: String;
-begin
-  if CurStep = ssPostInstall then
-  begin
-    RuntimePath := ExpandConstant('{tmp}\windowsdesktop-runtime-9.0-win-x64.exe');
-    if FileExists(RuntimePath) then
-    begin
-      Exec(RuntimePath, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    end;
-  end;
-end;
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 Index"; Flags: nowait postinstall skipifsilent
