@@ -36,9 +36,7 @@ public sealed class OverlayWindow : Window
 
     // Selection geometry and rollback live in the platform-independent controller.
     private SelectionController? _selectionController;
-    private WindowTargetNavigator? _windowTargetNavigator;
-    private WindowSelectionTarget? _pressedWindowTarget;
-    private WindowSelectionTarget? _selectionCaptureTarget;
+    private readonly OverlayWindowTargetController _windowTargetController = new();
     private Point _lastPointerPosition;
     private bool _isConfirmed;
     private bool _hasClosed;
@@ -63,7 +61,6 @@ public sealed class OverlayWindow : Window
     private readonly OverlayVisualUpdater _visualUpdater;
     private readonly OverlayKeyboardHandler _keyboardHandler;
     private bool _toolbarRefreshQueued;
-    private bool _pixelEdgeDetectionRequested;
     private byte[] _frozenPng = [];
 
     // 选区（覆盖层局部坐标）
@@ -187,7 +184,7 @@ public sealed class OverlayWindow : Window
             () => FrozenLogicalWidth,
             () => FrozenLogicalHeight,
             () => Coordinates,
-            () => _windowTargetNavigator?.CandidateCount ?? 0);
+            () => _windowTargetController.CandidateCount);
 
         _keyboardHandler = new OverlayKeyboardHandler(
             _ocrController,
@@ -195,12 +192,13 @@ public sealed class OverlayWindow : Window
             () => _lastPointerPosition,
             () => Coordinates,
             direction => CycleWindowTarget(direction),
-            (point, coords) => _windowTargetNavigator?.HasTargetAt(point, coords) == true,
+            (point, coords) => _windowTargetController.HasTargetAt(point, coords),
             RequestCancel,
             ConfirmSelection,
             ApplyPreviousSelection);
 
         // 事件
+        _windowTargetController.PixelEdgeDetectionRequested += () => PixelEdgeDetectionRequested?.Invoke(this);
         _rootGrid.PointerPressed += OnPointerPressed;
         _rootGrid.PointerMoved += OnPointerMoved;
         _rootGrid.PointerReleased += OnPointerReleased;
@@ -247,13 +245,10 @@ public sealed class OverlayWindow : Window
             new SelectionRect(0, 0, FrozenLogicalWidth, FrozenLogicalHeight),
             MinSelectionSize,
             MinSelectionSize);
-        _windowTargetNavigator = new WindowTargetNavigator(
+        _windowTargetController.Initialize(
             windowTargets ?? Array.Empty<WindowSelectionTarget>(),
             pixelEdgeDetector,
             _snapshotIdentity.Value);
-        _pressedWindowTarget = null;
-        _selectionCaptureTarget = null;
-        _pixelEdgeDetectionRequested = false;
         _lastPointerPosition = default;
         _selection = default;
         HideEditUI();
@@ -296,7 +291,7 @@ public sealed class OverlayWindow : Window
 
     public void SetPixelEdgeDetector(FrozenPixelEdgeDetector? pixelEdgeDetector)
     {
-        _windowTargetNavigator?.SetPixelEdgeDetector(pixelEdgeDetector);
+        _windowTargetController.SetPixelEdgeDetector(pixelEdgeDetector);
         if (pixelEdgeDetector is not null
             && !_isConfirmed
             && _selectionController is { IsInteracting: false } controller)
@@ -336,18 +331,14 @@ public sealed class OverlayWindow : Window
 
             _isConfirmed = false;
             controller.SetSelection(null);
-            _selectionCaptureTarget = null;
+            _windowTargetController.ClearCaptureTarget();
             SyncSelectionFromController();
             HideEditUI();
         }
 
-        _selectionCaptureTarget = null;
-        _pressedWindowTarget = _windowTargetNavigator is { IsCurrentTargetExplicit: true }
-            && _windowTargetNavigator.CurrentTarget is { } hovered
-            && WindowTargetNavigator.Contains(hovered, ToSelectionPoint(pos))
-            ? hovered
-            : _windowTargetNavigator?.FindPrimary(ToSelectionPoint(pos), Coordinates);
-        if (_pressedWindowTarget is { } target)
+        _windowTargetController.ClearCaptureTarget();
+        _windowTargetController.FindPressedTarget(ToSelectionPoint(pos), Coordinates);
+        if (_windowTargetController.PressedTarget is { } target)
         {
             controller.SetSelection(target.Bounds);
             SyncSelectionFromController();
@@ -396,22 +387,22 @@ public sealed class OverlayWindow : Window
             {
                 // A drag creates a free-form region. The window under the initial press is not an
                 // explicit target; resolve the completed selection instead.
-                _selectionCaptureTarget = null;
-                _pressedWindowTarget = null;
+                _windowTargetController.ClearCaptureTarget();
+                _windowTargetController.ClearPressedTarget();
                 EnterConfirmedState();
             }
-            else if (_pressedWindowTarget is { } target)
+            else if (_windowTargetController.PressedTarget is { } target)
             {
                 controller.SetSelection(target.Bounds);
                 SyncSelectionFromController();
-                _selectionCaptureTarget = target;
-                _pressedWindowTarget = null;
+                _windowTargetController.SetCaptureTarget(target);
+                _windowTargetController.ClearPressedTarget();
                 EnterConfirmedState();
             }
             else
             {
-                _pressedWindowTarget = null;
-                _selectionCaptureTarget = null;
+                _windowTargetController.ClearPressedTarget();
+                _windowTargetController.ClearCaptureTarget();
                 _isConfirmed = false;
                 _selectionBorder.Visibility = Visibility.Collapsed;
                 _sizeLabel.Visibility = Visibility.Collapsed;
@@ -430,7 +421,7 @@ public sealed class OverlayWindow : Window
     private void EnterConfirmedState()
     {
         _isConfirmed = true;
-        _windowTargetNavigator?.Reset();
+        _windowTargetController.Reset();
         _visualUpdater.ApplySelectionBorderStyle(isWindowPreview: false);
         _handlesCanvas.Visibility = Visibility.Visible;
         _sizeLabel.Visibility = Visibility.Visible;
@@ -451,7 +442,7 @@ public sealed class OverlayWindow : Window
 
     private void PreviewWindowAt(Point point, SelectionController controller)
     {
-        var target = _windowTargetNavigator?.PreviewAt(ToSelectionPoint(point), Coordinates);
+        var target = _windowTargetController.PreviewAt(ToSelectionPoint(point), Coordinates);
         ApplyWindowPreview(target, controller);
     }
 
@@ -483,8 +474,7 @@ public sealed class OverlayWindow : Window
     {
         if (_isConfirmed || _selectionController is not { IsInteracting: false } controller)
             return false;
-        if (_windowTargetNavigator is null
-            || !_windowTargetNavigator.TryCycle(
+        if (!_windowTargetController.TryCycle(
                 ToSelectionPoint(_lastPointerPosition),
                 direction,
                 Coordinates,
@@ -507,13 +497,7 @@ public sealed class OverlayWindow : Window
     }
 
     private void RequestPixelEdgeDetection()
-    {
-        if (_pixelEdgeDetectionRequested)
-            return;
-
-        _pixelEdgeDetectionRequested = true;
-        PixelEdgeDetectionRequested?.Invoke(this);
-    }
+        => _windowTargetController.RequestPixelEdgeDetection();
 
     /// <summary>另一块屏开始交互时，清除此屏尚未提交的选区与标注。</summary>
     public void SetSessionInactive()
@@ -524,8 +508,7 @@ public sealed class OverlayWindow : Window
         _annotation.Clear();
         SyncSelectionFromController();
         _isConfirmed = false;
-        _windowTargetNavigator?.Reset();
-        _selectionCaptureTarget = null;
+        _windowTargetController.Reset();
         HideEditUI();
         _initialFrame.Visibility = Visibility.Collapsed;
         _selectionBorder.Visibility = Visibility.Collapsed;
@@ -659,10 +642,9 @@ public sealed class OverlayWindow : Window
 
     private nint FindTargetWindowHandle()
     {
-        if (_selection.IsEmpty || _windowTargetNavigator is null)
+        if (_selection.IsEmpty)
             return nint.Zero;
-        return _windowTargetNavigator.ResolveCaptureHandle(
-            _selectionCaptureTarget,
+        return _windowTargetController.ResolveCaptureHandle(
             new SelectionRect(
                 _selection.X,
                 _selection.Y,
@@ -719,8 +701,8 @@ public sealed class OverlayWindow : Window
 
         controller.SetSelection(logical);
         SyncSelectionFromController();
-        _selectionCaptureTarget = null;
-        _pressedWindowTarget = null;
+        _windowTargetController.ClearCaptureTarget();
+        _windowTargetController.ClearPressedTarget();
         EnterConfirmedState();
         return true;
     }
