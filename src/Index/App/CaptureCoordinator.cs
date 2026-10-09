@@ -36,6 +36,7 @@ public sealed class CaptureCoordinator
     private DispatcherQueue? _uiDispatcher;
     private CaptureOverlaySessionController? _activeOverlaySession;
     private CancellationTokenSource? _highResolutionCancellation;
+    private CaptureSelection? _lastSelection;
 
     public CaptureCoordinator(
         CaptureSource captureSource,
@@ -247,7 +248,8 @@ public sealed class CaptureCoordinator
                 sourceSnapshot.Windows,
                 _ocrTextRecognizer,
                 _clipboardWriter,
-                _diagnostics);
+                _diagnostics,
+                _lastSelection);
             var overlayDispatcher = DispatcherQueue.GetForCurrentThread()
                 ?? _uiDispatcher
                 ?? throw new InvalidOperationException("Overlay creation requires a UI dispatcher.");
@@ -640,6 +642,7 @@ public sealed class CaptureCoordinator
         SourceApplicationSnapshot sourceSnapshot)
     {
         var result = decision.Selection;
+        _lastSelection = result;
 
         try
         {

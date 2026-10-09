@@ -34,7 +34,8 @@ public sealed class SelectionOverlaySession : IDisposable
         IReadOnlyList<SourceWindowInfo> windows,
         IOcrTextRecognizer ocrTextRecognizer,
         IClipboardWriter clipboardWriter,
-        IAppDiagnostics diagnostics)
+        IAppDiagnostics diagnostics,
+        CaptureSelection? previousSelection = null)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
         if (snapshots.Count == 0)
@@ -50,6 +51,11 @@ public sealed class SelectionOverlaySession : IDisposable
                 clipboardWriter,
                 diagnostics);
             window.CloseOnCapture = false;
+            if (previousSelection is not null
+                && string.Equals(previousSelection.Display.DisplayId, snapshot.DisplayId, StringComparison.OrdinalIgnoreCase))
+            {
+                window.SetPreviousSelection(previousSelection);
+            }
             var targets = WindowSelectionTargetMapper.Create(
                 snapshot,
                 windows);

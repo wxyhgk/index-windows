@@ -72,6 +72,9 @@ public sealed class OverlayWindow : Window
     // 选区（覆盖层局部坐标）
     private Rect _selection;
 
+    // 上次截图的选区（物理像素），按 R 键复用
+    private CaptureSelection? _previousSelection;
+
     // 冻结画面的物理像素尺寸（用于把框选坐标换算成裁剪坐标）
     private int _frozenPixelWidth;
     private int _frozenPixelHeight;
@@ -157,6 +160,12 @@ public sealed class OverlayWindow : Window
         _rootGrid.PointerWheelChanged += OnPointerWheelChanged;
         _rootGrid.KeyDown += OnKeyDown;
         Closed += OnClosed;
+    }
+
+    /// <summary>设置上次截图的选区，按 R 键可复用。</summary>
+    public void SetPreviousSelection(CaptureSelection? selection)
+    {
+        _previousSelection = selection;
     }
 
     public void Show(
@@ -1111,7 +1120,37 @@ public sealed class OverlayWindow : Window
                     e.Handled = true;
                 }
                 break;
+
+            case VirtualKey.R:
+                if (ApplyPreviousSelection())
+                    e.Handled = true;
+                break;
         }
+    }
+
+    private bool ApplyPreviousSelection()
+    {
+        if (_previousSelection is not { } previous
+            || _snapshotIdentity is not { } identity
+            || !string.Equals(previous.Display.DisplayId, identity.DisplayId, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var coordinates = Coordinates;
+        var logical = coordinates.PixelToLogical(new SelectionRect(
+            previous.X, previous.Y, previous.Width, previous.Height));
+
+        if (logical.Width < MinSelectionSize || logical.Height < MinSelectionSize)
+            return false;
+
+        if (_selectionController is not { } controller)
+            return false;
+
+        controller.SetSelection(logical);
+        SyncSelectionFromController();
+        _selectionCaptureTarget = null;
+        _pressedWindowTarget = null;
+        EnterConfirmedState();
+        return true;
     }
 
     private void RequestCancel()
