@@ -56,7 +56,8 @@ Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{ap
 [Code]
 function IsDotNet9DesktopInstalled: Boolean;
 begin
-  Result := DirExists('C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App');
+  Result := DirExists('C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App')
+    or DirExists('C:\Program Files (x86)\dotnet\shared\Microsoft.WindowsDesktop.App');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
