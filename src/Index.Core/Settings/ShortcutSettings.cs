@@ -5,14 +5,16 @@ public sealed record ShortcutSettings(
     KeyboardShortcut Gallery,
     KeyboardShortcut Clipboard,
     KeyboardShortcut VirtualWindow,
-    bool Automatic4KCapture = false)
+    bool Automatic4KCapture = false,
+    KeyboardShortcut DelayedCapture = default)
 {
     public static ShortcutSettings Defaults => new(
         KeyboardShortcut.CaptureDefault,
         KeyboardShortcut.GalleryDefault,
         KeyboardShortcut.ClipboardDefault,
         KeyboardShortcut.VirtualWindowDefault,
-        Automatic4KCapture: false);
+        Automatic4KCapture: false,
+        KeyboardShortcut.DelayedCaptureDefault);
 
     public void Validate()
     {
@@ -24,9 +26,11 @@ public sealed record ShortcutSettings(
             throw new ArgumentException("剪贴板快捷键必须包含至少一个修饰键。", nameof(Clipboard));
         if (!VirtualWindow.IsValid)
             throw new ArgumentException("4K 当前窗口快捷键必须包含至少一个修饰键。", nameof(VirtualWindow));
+        if (!DelayedCapture.IsValid)
+            throw new ArgumentException("延迟截图快捷键必须包含至少一个修饰键。", nameof(DelayedCapture));
 
-        KeyboardShortcut[] shortcuts = [Capture, Gallery, Clipboard, VirtualWindow];
+        KeyboardShortcut[] shortcuts = [Capture, Gallery, Clipboard, VirtualWindow, DelayedCapture];
         if (shortcuts.Distinct().Count() != shortcuts.Length)
-            throw new ArgumentException("截图、4K 当前窗口、图库与剪贴板不能使用相同的快捷键。", nameof(VirtualWindow));
+            throw new ArgumentException("截图、4K 当前窗口、图库、剪贴板与延迟截图不能使用相同的快捷键。", nameof(DelayedCapture));
     }
 }

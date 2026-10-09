@@ -203,7 +203,8 @@ public static class Program
                     },
                     () => StartVirtualWindowCapture(virtualWindowCapture),
                     () => _mainWindow.DispatcherQueue.TryEnqueue(_mainWindow.ShowLibraryPage),
-                    () => _mainWindow.DispatcherQueue.TryEnqueue(_clipboardPopup.Toggle));
+                    () => _mainWindow.DispatcherQueue.TryEnqueue(_clipboardPopup.Toggle),
+                    () => _coordinator.BeginDelayedCapture());
                 _shortcutController.Start();
                 _clipboardHistory.Start();
                 _mainWindow.Closed += (_, _) =>

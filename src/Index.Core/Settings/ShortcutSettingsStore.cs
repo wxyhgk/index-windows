@@ -78,6 +78,8 @@ public sealed class ShortcutSettingsStore : IShortcutSettingsStore
                 settings = settings with { Clipboard = KeyboardShortcut.ClipboardDefault };
             if (settings is not null && !settings.VirtualWindow.IsValid)
                 settings = settings with { VirtualWindow = KeyboardShortcut.VirtualWindowDefault };
+            if (settings is not null && !settings.DelayedCapture.IsValid)
+                settings = settings with { DelayedCapture = KeyboardShortcut.DelayedCaptureDefault };
             settings?.Validate();
             return settings ?? ShortcutSettings.Defaults;
         }

@@ -34,7 +34,8 @@ public sealed class ShortcutSettingsTests
                 new KeyboardShortcut(0x4C, HotKeyModifiers.Control | HotKeyModifiers.Shift),
                 new KeyboardShortcut(0x56, HotKeyModifiers.Control | HotKeyModifiers.Alt),
                 new KeyboardShortcut(0x34, HotKeyModifiers.Control | HotKeyModifiers.Alt),
-                Automatic4KCapture: true);
+                Automatic4KCapture: true,
+                DelayedCapture: new KeyboardShortcut(0x44, HotKeyModifiers.Control | HotKeyModifiers.Shift));
 
             store.Save(expected);
 
@@ -57,7 +58,8 @@ public sealed class ShortcutSettingsTests
                 noModifier,
                 KeyboardShortcut.GalleryDefault,
                 KeyboardShortcut.ClipboardDefault,
-                KeyboardShortcut.VirtualWindowDefault).Validate());
+                KeyboardShortcut.VirtualWindowDefault,
+                DelayedCapture: KeyboardShortcut.DelayedCaptureDefault).Validate());
 
         var duplicate = KeyboardShortcut.CaptureDefault;
         Assert.Throws<ArgumentException>(() =>
@@ -65,7 +67,8 @@ public sealed class ShortcutSettingsTests
                 duplicate,
                 duplicate,
                 KeyboardShortcut.ClipboardDefault,
-                KeyboardShortcut.VirtualWindowDefault).Validate());
+                KeyboardShortcut.VirtualWindowDefault,
+                DelayedCapture: KeyboardShortcut.DelayedCaptureDefault).Validate());
     }
 
     [Fact]

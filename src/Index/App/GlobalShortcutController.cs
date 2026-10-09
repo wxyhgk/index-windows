@@ -13,6 +13,7 @@ public sealed class GlobalShortcutController : IDisposable
     private readonly Action _captureVirtualWindow;
     private readonly Action _showGallery;
     private readonly Action _showClipboard;
+    private readonly Action _delayedCapture;
     private GlobalHotKey? _hotKeys;
     private bool _started;
 
@@ -21,7 +22,8 @@ public sealed class GlobalShortcutController : IDisposable
         Action capture,
         Action captureVirtualWindow,
         Action showGallery,
-        Action showClipboard)
+        Action showClipboard,
+        Action delayedCapture)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _capture = capture ?? throw new ArgumentNullException(nameof(capture));
@@ -29,6 +31,7 @@ public sealed class GlobalShortcutController : IDisposable
             ?? throw new ArgumentNullException(nameof(captureVirtualWindow));
         _showGallery = showGallery ?? throw new ArgumentNullException(nameof(showGallery));
         _showClipboard = showClipboard ?? throw new ArgumentNullException(nameof(showClipboard));
+        _delayedCapture = delayedCapture ?? throw new ArgumentNullException(nameof(delayedCapture));
     }
 
     public void Start()
@@ -53,6 +56,7 @@ public sealed class GlobalShortcutController : IDisposable
         Register(hotKeys, settings.VirtualWindow, _captureVirtualWindow);
         Register(hotKeys, settings.Gallery, _showGallery);
         Register(hotKeys, settings.Clipboard, _showClipboard);
+        Register(hotKeys, settings.DelayedCapture, _delayedCapture);
         _hotKeys = hotKeys;
     }
 

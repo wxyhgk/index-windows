@@ -171,6 +171,30 @@ public sealed class CaptureCoordinator
         }
     }
 
+    /// <summary>延迟截图：显示 3 秒倒计时，结束后冻结画面。</summary>
+    public void BeginDelayedCapture()
+    {
+        if (_uiDispatcher is not { } dispatcher)
+        {
+            Log("BeginDelayedCapture: no UI dispatcher");
+            return;
+        }
+
+        if (!dispatcher.TryEnqueue(() =>
+        {
+            var countdown = new OverlayCountdownWindow();
+            countdown.Completed += () =>
+            {
+                if (dispatcher.TryEnqueue(() => _ = BeginCaptureAsync("delayed")))
+                    Log("delayed capture: countdown completed, starting capture");
+            };
+            countdown.ShowAndStart();
+        }))
+        {
+            Log("BeginDelayedCapture: dispatch failed");
+        }
+    }
+
     private void RecoverOrReactivateOverlay(string source)
     {
         void Recover()

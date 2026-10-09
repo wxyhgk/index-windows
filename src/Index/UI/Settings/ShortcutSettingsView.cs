@@ -17,6 +17,7 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
     private readonly ShortcutRecorderControl _virtualWindowRecorder;
     private readonly ShortcutRecorderControl _galleryRecorder;
     private readonly ShortcutRecorderControl _clipboardRecorder;
+    private readonly ShortcutRecorderControl _delayedCaptureRecorder;
     private readonly TextBlock _status;
     private readonly TextBlock _virtualDisplayStatus;
     private readonly Button _virtualCaptureButton;
@@ -39,6 +40,7 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
         _virtualWindowRecorder = new ShortcutRecorderControl(store.Current.VirtualWindow);
         _galleryRecorder = new ShortcutRecorderControl(store.Current.Gallery);
         _clipboardRecorder = new ShortcutRecorderControl(store.Current.Clipboard);
+        _delayedCaptureRecorder = new ShortcutRecorderControl(store.Current.DelayedCapture);
         _status = new TextBlock
         {
             FontSize = 12,
@@ -74,6 +76,7 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
         _virtualWindowRecorder.ShortcutRecorded += (_, shortcut) => Save(virtualWindow: shortcut);
         _galleryRecorder.ShortcutRecorded += (_, shortcut) => Save(gallery: shortcut);
         _clipboardRecorder.ShortcutRecorded += (_, shortcut) => Save(clipboard: shortcut);
+        _delayedCaptureRecorder.ShortcutRecorded += (_, shortcut) => Save(delayedCapture: shortcut);
 
         var reset = new Button
         {
@@ -102,6 +105,10 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
             TextWrapping = TextWrapping.Wrap
         });
         content.Children.Add(MakeRow("截图", "冻结屏幕并开始框选", _captureRecorder));
+        content.Children.Add(MakeRow(
+            "延迟截图",
+            "3 秒倒计时后冻结屏幕，适合切换窗口或准备画面",
+            _delayedCaptureRecorder));
         content.Children.Add(MakeRow(
             "4K 当前窗口",
             "保持逻辑大小，在 4K 虚拟屏上按高 DPI 渲染并保存",
@@ -188,6 +195,7 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
         KeyboardShortcut? gallery = null,
         KeyboardShortcut? clipboard = null,
         KeyboardShortcut? virtualWindow = null,
+        KeyboardShortcut? delayedCapture = null,
         bool? automatic4KCapture = null)
     {
         var current = _store.Current;
@@ -196,7 +204,8 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
             gallery ?? current.Gallery,
             clipboard ?? current.Clipboard,
             virtualWindow ?? current.VirtualWindow,
-            automatic4KCapture ?? current.Automatic4KCapture);
+            automatic4KCapture ?? current.Automatic4KCapture,
+            delayedCapture ?? current.DelayedCapture);
         try
         {
             _store.Save(next);
@@ -222,6 +231,7 @@ public sealed class ShortcutSettingsView : UserControl, IDisposable
             _virtualWindowRecorder.SetShortcut(_store.Current.VirtualWindow);
             _galleryRecorder.SetShortcut(_store.Current.Gallery);
             _clipboardRecorder.SetShortcut(_store.Current.Clipboard);
+            _delayedCaptureRecorder.SetShortcut(_store.Current.DelayedCapture);
             _automatic4KCapture.IsOn = _store.Current.Automatic4KCapture;
         }
         finally

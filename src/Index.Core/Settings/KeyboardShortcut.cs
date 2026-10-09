@@ -17,6 +17,7 @@ public readonly record struct KeyboardShortcut(uint VirtualKey, HotKeyModifiers 
     public static KeyboardShortcut VirtualWindowDefault => new(0x34, HotKeyModifiers.Control | HotKeyModifiers.Shift);
     public static KeyboardShortcut GalleryDefault => new(0x47, HotKeyModifiers.Control | HotKeyModifiers.Shift);
     public static KeyboardShortcut ClipboardDefault => new(0x56, HotKeyModifiers.Control | HotKeyModifiers.Shift);
+    public static KeyboardShortcut DelayedCaptureDefault => new(0x44, HotKeyModifiers.Control | HotKeyModifiers.Shift);
 
     public bool IsValid => VirtualKey != 0 && Modifiers != HotKeyModifiers.None && !IsModifierKey(VirtualKey);
 
