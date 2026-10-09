@@ -55,8 +55,15 @@ Name: "{autodesktop}\Index"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{ap
 
 [Code]
 function IsDotNet9DesktopInstalled: Boolean;
+var
+  ResultCode: Integer;
 begin
-  Result := RegKeyExists(HKLM, 'SOFTWARE\dotnet\setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App');
+  // .NET installer writes version info to WOW6432Node (32-bit registry view).
+  // Use 32-bit reg.exe to ensure we read the correct view.
+  Exec(ExpandConstant('{sys}\SysWOW64\reg.exe'),
+       'query "HKLM\SOFTWARE\dotnet\setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App"',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := (ResultCode = 0);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
