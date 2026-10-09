@@ -61,6 +61,7 @@ public sealed class OverlayWindow : Window
     private readonly TextBlock _sizeLabelText;
     private readonly OverlayOcrController _ocrController;
     private readonly OverlayVisualUpdater _visualUpdater;
+    private readonly OverlayKeyboardHandler _keyboardHandler;
     private bool _toolbarRefreshQueued;
     private bool _pixelEdgeDetectionRequested;
     private byte[] _frozenPng = [];
@@ -188,12 +189,23 @@ public sealed class OverlayWindow : Window
             () => Coordinates,
             () => _windowTargetNavigator?.CandidateCount ?? 0);
 
+        _keyboardHandler = new OverlayKeyboardHandler(
+            _ocrController,
+            () => _isConfirmed,
+            () => _lastPointerPosition,
+            () => Coordinates,
+            direction => CycleWindowTarget(direction),
+            (point, coords) => _windowTargetNavigator?.HasTargetAt(point, coords) == true,
+            RequestCancel,
+            ConfirmSelection,
+            ApplyPreviousSelection);
+
         // 事件
         _rootGrid.PointerPressed += OnPointerPressed;
         _rootGrid.PointerMoved += OnPointerMoved;
         _rootGrid.PointerReleased += OnPointerReleased;
         _rootGrid.PointerWheelChanged += OnPointerWheelChanged;
-        _rootGrid.KeyDown += OnKeyDown;
+        _rootGrid.KeyDown += _keyboardHandler.OnKeyDown;
         Closed += OnClosed;
     }
 
@@ -687,61 +699,6 @@ public sealed class OverlayWindow : Window
     }
 
     // MARK: - 键盘
-
-    private void OnKeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        bool shiftDown = InputKeyboardSource
-            .GetKeyStateForCurrentThread(VirtualKey.Shift)
-            .HasFlag(CoreVirtualKeyStates.Down);
-        bool controlDown = InputKeyboardSource
-            .GetKeyStateForCurrentThread(VirtualKey.Control)
-            .HasFlag(CoreVirtualKeyStates.Down);
-        switch (e.Key)
-        {
-            case VirtualKey.C when controlDown && _ocrController.IsActive:
-                _ocrController.CopySelected();
-                e.Handled = true;
-                break;
-
-            case VirtualKey.C when shiftDown && _isConfirmed:
-                _ocrController.CopyAll();
-                e.Handled = true;
-                break;
-
-            case VirtualKey.Tab:
-                bool cycled = CycleWindowTarget(shiftDown ? -1 : 1);
-                bool hasTarget = !_isConfirmed
-                    && _windowTargetNavigator?.HasTargetAt(
-                        ToSelectionPoint(_lastPointerPosition),
-                        Coordinates) == true;
-                if (cycled || hasTarget)
-                    e.Handled = true;
-                break;
-
-            case VirtualKey.Escape:
-                if (_ocrController.IsActive && _ocrController.HasSelection)
-                    _ocrController.ClearSelection();
-                else if (_ocrController.IsActive)
-                    _ocrController.Deactivate();
-                else
-                    RequestCancel();
-                e.Handled = true;
-                break;
-
-            case VirtualKey.Enter:
-                if (_isConfirmed)
-                {
-                    ConfirmSelection(ToolbarCommandIds.Complete);
-                    e.Handled = true;
-                }
-                break;
-
-            case VirtualKey.R:
-                if (ApplyPreviousSelection())
-                    e.Handled = true;
-                break;
-        }
-    }
 
     private bool ApplyPreviousSelection()
     {
