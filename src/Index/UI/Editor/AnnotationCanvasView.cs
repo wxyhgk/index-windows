@@ -27,7 +27,8 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
 
     private const double HandleHitRadius = 10;
 
-    private readonly SKXamlCanvas _canvas;
+    private readonly bool _ignorePixelScaling;
+    private SKXamlCanvas? _canvas;
     private SKBitmap? _backgroundBitmap;
     private SKBitmap? _pixelatedBackgroundBitmap;
     private string _pixelateSignature = string.Empty;
@@ -42,28 +43,16 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
     {
     }
 
-    public AnnotationCanvasView(AnnotationState state)
+    public AnnotationCanvasView(AnnotationState state, bool ignorePixelScaling = true)
     {
         State = state ?? throw new ArgumentNullException(nameof(state));
         _lastCanUndo = State.CanUndo;
         _lastCanRedo = State.CanRedo;
+        _ignorePixelScaling = ignorePixelScaling;
 
-        _canvas = new SKXamlCanvas
-        {
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            IgnorePixelScaling = true
-        };
-
-        Content = _canvas;
+        Content = new Grid();
         IsTabStop = true;
 
-        _canvas.PaintSurface += OnPaintSurface;
-        _canvas.PointerPressed += OnPointerPressed;
-        _canvas.PointerMoved += OnPointerMoved;
-        _canvas.PointerReleased += OnPointerReleased;
-        _canvas.PointerCaptureLost += OnPointerCaptureLost;
-        KeyDown += OnKeyDown;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
 
@@ -119,16 +108,40 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
 
     public void InvalidateCanvas()
     {
-        if (!_disposed)
-            _canvas.Invalidate();
+        if (!_disposed && _canvas is { } canvas)
+            canvas.Invalidate();
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e) => SubscribeToState();
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_canvas is null && !_disposed)
+            EnsureCanvas();
+        SubscribeToState();
+    }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         CancelPointerOperation();
         UnsubscribeFromState();
+    }
+
+    private void EnsureCanvas()
+    {
+        if (_canvas is not null || _disposed) return;
+
+        var canvas = new SKXamlCanvas
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IgnorePixelScaling = _ignorePixelScaling
+        };
+        canvas.PaintSurface += OnPaintSurface;
+        canvas.PointerPressed += OnPointerPressed;
+        canvas.PointerMoved += OnPointerMoved;
+        canvas.PointerReleased += OnPointerReleased;
+        canvas.PointerCaptureLost += OnPointerCaptureLost;
+        _canvas = canvas;
+        Content = canvas;
     }
 
     private void SubscribeToState()
@@ -258,9 +271,9 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (_disposed || _pointerOperation != PointerOperation.None) return;
+        if (_disposed || _canvas is not { } canvas || _pointerOperation != PointerOperation.None) return;
 
-        var currentPoint = e.GetCurrentPoint(_canvas);
+        var currentPoint = e.GetCurrentPoint(canvas);
         if (!currentPoint.Properties.IsLeftButtonPressed) return;
 
         Focus(FocusState.Pointer);
@@ -292,15 +305,15 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
         }
 
         if (_pointerOperation != PointerOperation.None)
-            _canvas.CapturePointer(e.Pointer);
+            canvas.CapturePointer(e.Pointer);
         e.Handled = true;
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (_disposed || _pointerOperation == PointerOperation.None) return;
+        if (_disposed || _canvas is not { } canvas || _pointerOperation == PointerOperation.None) return;
 
-        var point = ToPoint(e.GetCurrentPoint(_canvas).Position);
+        var point = ToPoint(e.GetCurrentPoint(canvas).Position);
         switch (_pointerOperation)
         {
             case PointerOperation.Draw:
@@ -318,10 +331,10 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (_disposed || _pointerOperation == PointerOperation.None) return;
+        if (_disposed || _canvas is not { } canvas || _pointerOperation == PointerOperation.None) return;
 
         CompletePointerOperation();
-        _canvas.ReleasePointerCapture(e.Pointer);
+        canvas.ReleasePointerCapture(e.Pointer);
         e.Handled = true;
     }
 
@@ -376,7 +389,7 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
     {
         if (_pointerOperation == PointerOperation.None) return;
         CompletePointerOperation();
-        _canvas.ReleasePointerCaptures();
+        _canvas?.ReleasePointerCaptures();
     }
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
@@ -419,11 +432,15 @@ public sealed class AnnotationCanvasView : UserControl, IDisposable
         _disposed = true;
 
         UnsubscribeFromState();
-        _canvas.PaintSurface -= OnPaintSurface;
-        _canvas.PointerPressed -= OnPointerPressed;
-        _canvas.PointerMoved -= OnPointerMoved;
-        _canvas.PointerReleased -= OnPointerReleased;
-        _canvas.PointerCaptureLost -= OnPointerCaptureLost;
+        if (_canvas is { } canvas)
+        {
+            canvas.PaintSurface -= OnPaintSurface;
+            canvas.PointerPressed -= OnPointerPressed;
+            canvas.PointerMoved -= OnPointerMoved;
+            canvas.PointerReleased -= OnPointerReleased;
+            canvas.PointerCaptureLost -= OnPointerCaptureLost;
+        }
+        _canvas = null;
         KeyDown -= OnKeyDown;
         Loaded -= OnLoaded;
         Unloaded -= OnUnloaded;

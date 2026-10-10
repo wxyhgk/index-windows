@@ -46,7 +46,7 @@ internal sealed class ShotEditorWorkspaceView : UserControl, IDisposable
         ArgumentNullException.ThrowIfNull(assets);
         _commands = commands ?? throw new ArgumentNullException(nameof(commands));
         _theme = theme ?? throw new ArgumentNullException(nameof(theme));
-        _dispatcher = DispatcherQueue;
+        _dispatcher = DispatcherQueue.GetForCurrentThread();
         _controller.SetSessionDispatcher(RunOnUiAsync);
 
         _canvasPane = new EditorCanvasPane(_controller.Annotation, _controller.Shot, _theme);

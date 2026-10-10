@@ -23,7 +23,7 @@ internal sealed class EditorCanvasPane : UserControl, IDisposable
         _shot = shot ?? throw new ArgumentNullException(nameof(shot));
         ArgumentNullException.ThrowIfNull(theme);
 
-        Canvas = new AnnotationCanvasView(annotation)
+        Canvas = new AnnotationCanvasView(annotation, ignorePixelScaling: false)
         {
             Width = Math.Max(1, shot.PixelWidth),
             Height = Math.Max(1, shot.PixelHeight),
