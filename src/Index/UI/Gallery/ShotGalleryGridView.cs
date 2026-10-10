@@ -9,11 +9,11 @@ using VirtualKey = Windows.System.VirtualKey;
 namespace Index.UI.Gallery;
 
 /// <summary>
-/// 游标分页的虚拟化截图网格。ItemsRepeater 只创建视口附近的行，每行固定四张卡片。
+/// 游标分页的虚拟化截图网格。ItemsRepeater 只创建视口附近的行，列数由 GalleryLayout 响应式推导。
 /// </summary>
 internal sealed class ShotGalleryGridView : UserControl, IDisposable
 {
-    private const int Columns = 4;
+    private const double TargetCardWidth = 140;
     private const int PageSize = 300;
     private const double Spacing = 14;
     private const double ThumbnailHeight = 144;
@@ -33,7 +33,8 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
     private ShotPageCursor? _nextCursor;
     private bool _isLoadingPage;
     private bool _thumbnailLoadingEnabled = true;
-    private double _responsiveCardWidth = 200;
+    private double _responsiveCardWidth = 180;
+    private int _columnCount = 4;
     private long? _selectedId;
     private bool _disposed;
 
@@ -90,8 +91,15 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
     private void AppendRows(IReadOnlyList<ShotRecord> shots)
     {
         _loadedShots.AddRange(shots);
-        for (var start = 0; start < shots.Count; start += Columns)
-            _rows.Add(new ShotRow(shots.Skip(start).Take(Columns).ToArray()));
+        for (var start = 0; start < shots.Count; start += _columnCount)
+            _rows.Add(new ShotRow(shots.Skip(start).Take(_columnCount).ToArray()));
+    }
+
+    private void RepackRows()
+    {
+        _rows.Clear();
+        for (var start = 0; start < _loadedShots.Count; start += _columnCount)
+            _rows.Add(new ShotRow(_loadedShots.Skip(start).Take(_columnCount).ToArray()));
     }
 
     private void OnViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
@@ -174,7 +182,26 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
 
     private void ScheduleResponsiveCardWidth(double rowWidth)
     {
-        _responsiveCardWidth = Math.Max(1, (rowWidth - (Spacing * (Columns - 1))) / Columns);
+        var layout = GalleryLayout.Calculate(new GalleryLayoutRequest(
+            StableContainerWidth: rowWidth,
+            TargetCardWidth: TargetCardWidth,
+            Spacing: Spacing,
+            ScrollbarReserve: 16));
+
+        int newColumns = layout.ColumnCount;
+        double newCardWidth = layout.ColumnWidth;
+
+        if (newColumns != _columnCount)
+        {
+            _columnCount = newColumns;
+            _responsiveCardWidth = newCardWidth;
+            RepackRows();
+        }
+        else
+        {
+            _responsiveCardWidth = newCardWidth;
+        }
+
         if (!_resizeTimer.IsRunning)
             _resizeTimer.Start();
     }
@@ -233,7 +260,7 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
         var index = _loadedShots.FindIndex(item => item.Id == shot.Id);
         if (index < 0)
             return;
-        var row = _repeater.GetOrCreateElement(index / Columns);
+        var row = _repeater.GetOrCreateElement(index / _columnCount);
         row.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
     }
 
@@ -257,8 +284,8 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
         {
             VirtualKey.Left => -1,
             VirtualKey.Right => 1,
-            VirtualKey.Up => -Columns,
-            VirtualKey.Down => Columns,
+            VirtualKey.Up => -_columnCount,
+            VirtualKey.Down => _columnCount,
             _ => 0
         };
         if (delta == 0)
@@ -339,14 +366,14 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
     {
         private readonly ShotGalleryGridView _owner;
         private readonly List<ShotCardView> _cards = [];
+        private int _columnCount;
 
         public ShotRowView(ShotGalleryGridView owner, ShotRow row)
         {
             _owner = owner;
             ColumnSpacing = Spacing;
             HorizontalAlignment = HorizontalAlignment.Stretch;
-            for (var column = 0; column < Columns; column++)
-                ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            _columnCount = 0;
 
             Bind(row);
             SizeChanged += OnSizeChanged;
@@ -354,7 +381,16 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
 
         public void Bind(ShotRow row)
         {
-            for (var column = 0; column < row.Shots.Count; column++)
+            int columns = row.Shots.Count;
+            if (columns != _columnCount)
+            {
+                ColumnDefinitions.Clear();
+                for (var column = 0; column < columns; column++)
+                    ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                _columnCount = columns;
+            }
+
+            for (var column = 0; column < columns; column++)
             {
                 if (column < _cards.Count)
                 {
@@ -368,7 +404,7 @@ internal sealed class ShotGalleryGridView : UserControl, IDisposable
                 _cards.Add(card);
             }
 
-            for (var column = row.Shots.Count; column < _cards.Count; column++)
+            for (var column = columns; column < _cards.Count; column++)
             {
                 _owner.UnrealizeCard(_cards[column]);
                 _cards[column].Visibility = Visibility.Collapsed;
