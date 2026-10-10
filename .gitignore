@@ -34,6 +34,9 @@ src/Index/Assets/ketcher-standalone.tgz
 # The native WinUI3 port under ketcher_winui3/src and tests remains tracked.
 ketcher_winui3/reference/
 
+# Dev verification logs (local records, not pushed)
+dev-log/
+
 # Python virtual environment
 molgrapher-service/venv/
 molgrapher-service/logs/
